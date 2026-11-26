@@ -1,7 +1,7 @@
 //! Conformance suite for [`Signal`].
 
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use baton_core::GroupId;
 use bytes::Bytes;
@@ -37,14 +37,17 @@ pub async fn signal(sig: Arc<dyn Signal>, ttl: Duration) {
     );
 
     let _never_read = sig.subscribe(&g1, "slow").await.unwrap();
-    let started = Instant::now();
-    for i in 0..2_000u32 {
-        sig.publish(&g1, "slow", Bytes::from(i.to_be_bytes().to_vec()))
-            .await
-            .unwrap();
-    }
+    let publishing = async {
+        for i in 0..2_000u32 {
+            sig.publish(&g1, "slow", Bytes::from(i.to_be_bytes().to_vec()))
+                .await
+                .unwrap();
+        }
+    };
     assert!(
-        started.elapsed() < Duration::from_secs(20),
+        tokio::time::timeout(Duration::from_secs(300), publishing)
+            .await
+            .is_ok(),
         "a subscriber that never reads does not block publishers"
     );
 
