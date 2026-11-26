@@ -98,7 +98,7 @@ pub struct ServerSection {
     pub push: PushSection,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PushSection {
     /// Subscribes Gmail and Graph accounts to push when `public_url` is set. On by default.
@@ -132,6 +132,18 @@ pub struct WebhooksSection {
     /// Longest wait for one delivery, in seconds (default 10).
     #[serde(default)]
     pub timeout_secs: Option<u64>,
+}
+
+impl Default for PushSection {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            gmail_topic: None,
+            gmail_token_env: None,
+            gmail_oidc_audience: None,
+            gmail_oidc_email: None,
+        }
+    }
 }
 
 impl Default for ServerSection {
@@ -488,6 +500,15 @@ access = { mail = "api", mail_write = true }
     #[test]
     fn the_example_config_parses() {
         Config::parse(include_str!("../skein.example.toml")).unwrap();
+    }
+
+    #[test]
+    fn push_is_on_when_the_push_table_is_missing() {
+        assert!(Config::parse(&base("")).unwrap().server.push.enabled);
+        let listen_only = Config::parse(&base("[server]\nlisten = \"127.0.0.1:9\"")).unwrap();
+        assert!(listen_only.server.push.enabled);
+        let off = Config::parse(&base("[server.push]\nenabled = false")).unwrap();
+        assert!(!off.server.push.enabled);
     }
 
     #[test]
