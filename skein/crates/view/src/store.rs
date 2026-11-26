@@ -1,7 +1,7 @@
 use std::path::Path;
 use std::sync::{Mutex, MutexGuard};
 
-use rusqlite::{Connection, OptionalExtension, Row, Transaction, params};
+use rusqlite::{Connection, OptionalExtension, Row, Transaction, named_params, params};
 use serde::Serialize;
 use skein_core::{BlobHash, Event, EventBody, Flags, ItemRef, MailboxInfo};
 use skein_storage::{SegmentRef, Snapshot};
@@ -16,7 +16,7 @@ pub use pim::{CollectionRow, ObjectDetail, ObjectInCollection, ObjectSummary, Pl
 
 /// Schema changes in order; a database at `user_version` n has had the first n applied.
 /// Released entries never change: a new change is a new entry.
-const MIGRATIONS: &[&str] = &[V1, V2, V3];
+const MIGRATIONS: &[&str] = &[V1, V2, V3, V4];
 
 const V1: &str = "
 CREATE TABLE accounts (
@@ -141,6 +141,83 @@ CREATE VIRTUAL TABLE contact_search USING fts5 (
 pub const MAX_LIMIT: usize = 1000;
 
 const V3: &str = "ALTER TABLE accounts ADD COLUMN tip TEXT;";
+
+const V4: &str = "
+ALTER TABLE messages ADD COLUMN tags TEXT NOT NULL DEFAULT '[]';
+ALTER TABLE messages ADD COLUMN parser TEXT;
+CREATE TABLE addresses (
+    account TEXT NOT NULL,
+    address TEXT NOT NULL,
+    name TEXT,
+    last_seen INTEGER NOT NULL,
+    as_sender INTEGER NOT NULL DEFAULT 0,
+    as_recipient INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (account, address)
+);
+CREATE INDEX addresses_name ON addresses (name);
+";
+
+/// The JSON form of the `\Flagged` flag inside a membership's flags.
+const FLAGGED_JSON: &str = r#""\\Flagged""#;
+
+/// Most address suggestions any call returns.
+pub const MAX_SUGGESTIONS: usize = 50;
+
+/// Narrows message, thread and search reads. Every field left `None` matches everything.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Filter {
+    /// Only messages with a membership in one of these mailboxes; an empty list matches nothing.
+    pub mailboxes: Option<Vec<String>>,
+    /// Only unread (`true`) or only read (`false`) messages.
+    pub unread: Option<bool>,
+    /// Only messages flagged in some mailbox (`true`) or in none (`false`).
+    pub flagged: Option<bool>,
+    /// Only messages with (`true`) or without (`false`) attachments.
+    pub has_attachments: Option<bool>,
+    /// Only messages carrying this tag.
+    pub tag: Option<String>,
+}
+
+impl Filter {
+    /// Only messages in `mailbox`.
+    pub fn mailbox(mailbox: &str) -> Self {
+        Self {
+            mailboxes: Some(vec![mailbox.to_owned()]),
+            ..Self::default()
+        }
+    }
+
+    fn mailboxes_json(&self) -> Option<String> {
+        self.mailboxes.as_ref().map(to_json)
+    }
+}
+
+/// The SQL condition of a [`Filter`] on the message alias `m`, with named parameters.
+const FILTER: &str = "(:mailboxes IS NULL OR EXISTS (SELECT 1 FROM memberships fb
+        WHERE fb.message = m.id AND fb.mailbox IN (SELECT value FROM json_each(:mailboxes))))
+    AND (:unread IS NULL OR ((SELECT MIN(fb.seen) FROM memberships fb WHERE fb.message = m.id) = 0) = :unread)
+    AND (:flagged IS NULL OR EXISTS (SELECT 1 FROM memberships fb
+        WHERE fb.message = m.id AND instr(fb.flags, :flag) > 0) = :flagged)
+    AND (:attachments IS NULL OR m.has_attachments = :attachments)
+    AND (:tag IS NULL OR EXISTS (SELECT 1 FROM json_each(m.tags) WHERE value = :tag))";
+
+/// A known correspondent of an account.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct AddressRow {
+    /// The account that saw it.
+    pub account: String,
+    /// The address, lower case.
+    pub address: String,
+    /// The latest display name seen with it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// When it was last seen, milliseconds since the epoch.
+    pub last_seen: i64,
+    /// Messages it sent.
+    pub as_sender: u64,
+    /// Messages it received.
+    pub as_recipient: u64,
+}
 
 /// Why a store operation failed.
 #[derive(Debug, thiserror::Error)]
@@ -270,6 +347,10 @@ pub struct Envelope {
     pub mailboxes: Vec<String>,
     /// False when the original bytes could not be read or parsed.
     pub available: bool,
+    /// Whether some membership has `\Flagged`.
+    pub flagged: bool,
+    /// Tags the parser attached, sorted.
+    pub tags: Vec<String>,
 }
 
 /// A message in one mailbox.
@@ -340,11 +421,13 @@ pub struct ThreadRow {
     pub latest: Envelope,
 }
 
-const ENVELOPE: &str = "m.blob, m.thread_id, m.message_id, m.subject, m.from_json, m.to_json,
+const ENVELOPE: &str = r#"m.blob, m.thread_id, m.message_id, m.subject, m.from_json, m.to_json,
     m.cc_json, m.date, m.received_at, m.sort_date, m.size, m.has_attachments, m.snippet,
     m.available,
     (SELECT json_group_array(b.mailbox) FROM memberships b WHERE b.message = m.id),
-    (SELECT MIN(b.seen) FROM memberships b WHERE b.message = m.id)";
+    (SELECT MIN(b.seen) FROM memberships b WHERE b.message = m.id),
+    (SELECT MAX(instr(b.flags, '"\\Flagged"') > 0) FROM memberships b WHERE b.message = m.id),
+    m.tags"#;
 
 const VISIBLE: &str = "EXISTS (SELECT 1 FROM memberships b WHERE b.message = m.id)";
 
@@ -373,7 +456,24 @@ fn envelope(row: &Row<'_>) -> rusqlite::Result<Envelope> {
         available: row.get(13)?,
         mailboxes,
         unread: row.get::<_, Option<i64>>(15)? == Some(0),
+        flagged: row.get::<_, Option<i64>>(16)? == Some(1),
+        tags: json(&row.get::<_, String>(17)?),
     })
+}
+
+/// A message parsed by another parser version, from [`Store::stale_messages`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StaleMessage {
+    /// The account.
+    pub account: String,
+    /// The original's hash.
+    pub blob: BlobHash,
+    /// The original's size in bytes.
+    pub size: u64,
+    /// One mailbox the message sits in, when it sits in any.
+    pub mailbox: Option<String>,
+    /// That mailbox's role as the journal named it (`inbox`, `junk`, ...).
+    pub role: Option<String>,
 }
 
 fn lock(m: &Mutex<Connection>) -> MutexGuard<'_, Connection> {
@@ -472,6 +572,23 @@ impl Store {
         seen_at: i64,
         parsed: &Parsed,
     ) -> Result<(), StoreError> {
+        self.insert_parsed(account, blob, size, received_at, seen_at, parsed, None)
+    }
+
+    /// [`Store::insert_content`], also recording the version of the parser that produced
+    /// `parsed`, its tags (checked with [`crate::clean_tags`]) and its addresses in the
+    /// account's address book.
+    #[allow(clippy::too_many_arguments)]
+    pub fn insert_parsed(
+        &self,
+        account: &str,
+        blob: &BlobHash,
+        size: u64,
+        received_at: Option<i64>,
+        seen_at: i64,
+        parsed: &Parsed,
+        parser: Option<&str>,
+    ) -> Result<(), StoreError> {
         let mut conn = lock(&self.write);
         let tx = conn.transaction()?;
         let blob = blob.to_string();
@@ -491,9 +608,9 @@ impl Store {
         tx.execute(
             "INSERT INTO messages (account, blob, size, available, message_id, in_reply_to, refs,
                 subject, from_json, to_json, cc_json, date, received_at, sort_date,
-                has_attachments, attachments, text, html, snippet, thread_id, itip)
+                has_attachments, attachments, text, html, snippet, thread_id, itip, tags, parser)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17,
-                ?18, ?19, ?20, ?21)",
+                ?18, ?19, ?20, ?21, ?22, ?23)",
             params![
                 account,
                 blob,
@@ -516,6 +633,8 @@ impl Store {
                 parsed.snippet,
                 thread,
                 parsed.itip.as_ref().map(to_json),
+                to_json(&crate::parse::clean_tags(&parsed.tags)),
+                parser,
             ],
         )?;
         let id = tx.last_insert_rowid();
@@ -526,7 +645,134 @@ impl Store {
             "INSERT INTO search (rowid, subject, names, addresses, body) VALUES (?1, ?2, ?3, ?4, ?5)",
             params![id, parsed.subject, names.join(" "), addresses.join(" "), parsed.text],
         )?;
+        if parsed.available {
+            note_addresses(&tx, account, parsed, sort_date)?;
+        }
         tx.commit()?;
+        Ok(())
+    }
+
+    /// Messages whose stored content came from a parser version other than `version` (or from
+    /// a build that recorded none while the message was available), oldest row first, at most
+    /// `limit`: the account, the blob, its size and one mailbox it sits in with that mailbox's
+    /// role. Messages whose original was unavailable when parsed are not listed.
+    pub fn stale_messages(
+        &self,
+        version: &str,
+        limit: usize,
+    ) -> Result<Vec<StaleMessage>, StoreError> {
+        let conn = lock(&self.write);
+        let mut stmt = conn.prepare(
+            "SELECT m.account, m.blob, m.size,
+                    (SELECT b.mailbox FROM memberships b WHERE b.message = m.id LIMIT 1),
+                    (SELECT x.role FROM memberships b JOIN mailboxes x
+                        ON x.account = b.account AND x.id = b.mailbox
+                        WHERE b.message = m.id LIMIT 1)
+             FROM messages m
+             WHERE (m.parser IS NOT NULL AND m.parser != ?1)
+                OR (m.parser IS NULL AND m.available = 1)
+             ORDER BY m.id LIMIT ?2",
+        )?;
+        let rows = stmt
+            .query_map(params![version, limit.min(10_000) as i64], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, i64>(2)?,
+                    r.get::<_, Option<String>>(3)?,
+                    r.get::<_, Option<String>>(4)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|(account, blob, size, mailbox, role)| {
+                Some(StaleMessage {
+                    account,
+                    blob: BlobHash::parse(&blob).ok()?,
+                    size: size.max(0) as u64,
+                    mailbox,
+                    role,
+                })
+            })
+            .collect())
+    }
+
+    /// Replaces the parsed fields of the account's stored message `blob` with `parsed` from
+    /// parser `version`: envelope, body, attachments, invitation, tags and the search entry.
+    /// The thread, the sort date, the memberships and the address book stay as they are. Does
+    /// nothing when the message is not stored.
+    pub fn replace_parsed(
+        &self,
+        account: &str,
+        blob: &BlobHash,
+        parsed: &Parsed,
+        version: &str,
+    ) -> Result<(), StoreError> {
+        let mut conn = lock(&self.write);
+        let tx = conn.transaction()?;
+        let blob = blob.to_string();
+        let Some(id) = tx
+            .query_row(
+                "SELECT id FROM messages WHERE account = ?1 AND blob = ?2",
+                params![account, blob],
+                |r| r.get::<_, i64>(0),
+            )
+            .optional()?
+        else {
+            return Ok(());
+        };
+        tx.execute(
+            "UPDATE messages SET available = ?2, message_id = ?3, in_reply_to = ?4, refs = ?5,
+                subject = ?6, from_json = ?7, to_json = ?8, cc_json = ?9, date = ?10,
+                has_attachments = ?11, attachments = ?12, text = ?13, html = ?14, snippet = ?15,
+                itip = ?16, tags = ?17, parser = ?18
+             WHERE id = ?1",
+            params![
+                id,
+                parsed.available,
+                parsed.message_id,
+                to_json(&parsed.in_reply_to),
+                to_json(&parsed.references),
+                parsed.subject,
+                to_json(&parsed.from),
+                to_json(&parsed.to),
+                to_json(&parsed.cc),
+                parsed.date,
+                parsed.has_attachments,
+                to_json(&parsed.attachments),
+                parsed.text,
+                parsed.html,
+                parsed.snippet,
+                parsed.itip.as_ref().map(to_json),
+                to_json(&crate::parse::clean_tags(&parsed.tags)),
+                version,
+            ],
+        )?;
+        let people = || parsed.from.iter().chain(&parsed.to).chain(&parsed.cc);
+        let names: Vec<&str> = people().filter_map(|a| a.name.as_deref()).collect();
+        let addresses: Vec<&str> = people().filter_map(|a| a.address.as_deref()).collect();
+        tx.execute("DELETE FROM search WHERE rowid = ?1", params![id])?;
+        tx.execute(
+            "INSERT INTO search (rowid, subject, names, addresses, body) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![id, parsed.subject, names.join(" "), addresses.join(" "), parsed.text],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Records `version` for the account's message `blob` without changing its content: for a
+    /// stale message whose original is no longer available, so it is not listed again.
+    pub fn mark_parsed(
+        &self,
+        account: &str,
+        blob: &BlobHash,
+        version: &str,
+    ) -> Result<(), StoreError> {
+        lock(&self.write).execute(
+            "UPDATE messages SET parser = ?3 WHERE account = ?1 AND blob = ?2",
+            params![account, blob.to_string(), version],
+        )?;
         Ok(())
     }
 
@@ -750,13 +996,13 @@ impl Store {
             .query_row(&sql, params![account, id], |r| {
                 Ok((
                     envelope(r)?,
-                    r.get::<_, i64>(16)?,
-                    json::<Vec<String>>(&r.get::<_, String>(17)?),
-                    json::<Vec<String>>(&r.get::<_, String>(18)?),
-                    json::<Vec<Attachment>>(&r.get::<_, String>(19)?),
-                    r.get::<_, Option<String>>(20)?,
-                    r.get::<_, Option<String>>(21)?,
-                    r.get::<_, Option<String>>(22)?
+                    r.get::<_, i64>(18)?,
+                    json::<Vec<String>>(&r.get::<_, String>(19)?),
+                    json::<Vec<String>>(&r.get::<_, String>(20)?),
+                    json::<Vec<Attachment>>(&r.get::<_, String>(21)?),
+                    r.get::<_, Option<String>>(22)?,
+                    r.get::<_, Option<String>>(23)?,
+                    r.get::<_, Option<String>>(24)?
                         .and_then(|t| serde_json::from_str(&t).ok()),
                 ))
             })
@@ -879,8 +1125,8 @@ impl Store {
             |r| {
                 Ok(ThreadMessage {
                     envelope: envelope(r)?,
-                    references: json(&r.get::<_, String>(16)?),
-                    in_reply_to: json(&r.get::<_, String>(17)?),
+                    references: json(&r.get::<_, String>(18)?),
+                    in_reply_to: json(&r.get::<_, String>(19)?),
                 })
             },
         )?;
@@ -915,6 +1161,362 @@ impl Store {
             other => StoreError::Db(other),
         })
     }
+}
+
+impl Store {
+    /// Envelopes of the account matching `filter`, newest first by `(sort_date, id)`, strictly
+    /// before the cursor `(sort_date, id)`; at most `limit` and never more than [`MAX_LIMIT`].
+    pub fn messages_where(
+        &self,
+        account: &str,
+        filter: &Filter,
+        before: Option<(i64, String)>,
+        limit: usize,
+    ) -> Result<Vec<Envelope>, StoreError> {
+        let conn = self.reader();
+        let sql = format!(
+            "SELECT {ENVELOPE} FROM messages m
+             WHERE m.account = :account AND {VISIBLE} AND {FILTER}
+               AND (:date IS NULL OR (m.sort_date, m.blob) < (:date, :cursor))
+             ORDER BY m.sort_date DESC, m.blob DESC LIMIT :limit"
+        );
+        let (date, cursor) = before.unzip();
+        let mailboxes = filter.mailboxes_json();
+        let mut q = conn.prepare_cached(&sql)?;
+        let rows = q.query_map(
+            named_params! {
+                ":account": account,
+                ":mailboxes": mailboxes,
+                ":unread": filter.unread,
+                ":flagged": filter.flagged,
+                ":flag": FLAGGED_JSON,
+                ":attachments": filter.has_attachments,
+                ":tag": filter.tag,
+                ":date": date,
+                ":cursor": cursor,
+                ":limit": limit.min(MAX_LIMIT) as i64,
+            },
+            envelope,
+        )?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    /// Threads of the account with at least one message matching `filter`, newest first by
+    /// their newest message, strictly before the cursor `(latest sort_date, thread id)`. Counts
+    /// and the latest envelope cover the whole thread.
+    pub fn threads_where(
+        &self,
+        account: &str,
+        filter: &Filter,
+        before: Option<(i64, i64)>,
+        limit: usize,
+    ) -> Result<Vec<ThreadRow>, StoreError> {
+        let conn = self.reader();
+        let sql = format!(
+            "SELECT t.thread_id, MAX(t.sort_date) AS latest, COUNT(*),
+                SUM((SELECT MIN(b.seen) FROM memberships b WHERE b.message = t.id) = 0)
+             FROM messages t
+             WHERE t.account = :account
+               AND EXISTS (SELECT 1 FROM memberships b WHERE b.message = t.id)
+               AND t.thread_id IN (
+                   SELECT m.thread_id FROM messages m
+                   WHERE m.account = :account AND {VISIBLE} AND {FILTER})
+             GROUP BY t.thread_id
+             HAVING (:date IS NULL OR (latest, t.thread_id) < (:date, :cursor))
+             ORDER BY latest DESC, t.thread_id DESC LIMIT :limit"
+        );
+        let (date, cursor) = before.unzip();
+        let mailboxes = filter.mailboxes_json();
+        let groups: Vec<(i64, u64, u64)> = conn
+            .prepare_cached(&sql)?
+            .query_map(
+                named_params! {
+                    ":account": account,
+                    ":mailboxes": mailboxes,
+                    ":unread": filter.unread,
+                    ":flagged": filter.flagged,
+                    ":flag": FLAGGED_JSON,
+                    ":attachments": filter.has_attachments,
+                    ":tag": filter.tag,
+                    ":date": date,
+                    ":cursor": cursor,
+                    ":limit": limit.min(MAX_LIMIT) as i64,
+                },
+                |r| {
+                    Ok((
+                        r.get(0)?,
+                        r.get::<_, i64>(2)? as u64,
+                        r.get::<_, i64>(3)? as u64,
+                    ))
+                },
+            )?
+            .collect::<Result<_, _>>()?;
+        let latest_sql = format!(
+            "SELECT {ENVELOPE} FROM messages m
+             WHERE m.account = ?1 AND m.thread_id = ?2 AND {VISIBLE}
+             ORDER BY m.sort_date DESC, m.blob DESC LIMIT 1"
+        );
+        let mut latest = conn.prepare_cached(&latest_sql)?;
+        let mut out = Vec::with_capacity(groups.len());
+        for (id, count, unread) in groups {
+            if let Some(env) = latest
+                .query_row(params![account, id], envelope)
+                .optional()?
+            {
+                out.push(ThreadRow {
+                    id,
+                    count,
+                    unread,
+                    latest: env,
+                });
+            }
+        }
+        Ok(out)
+    }
+
+    /// Messages of the account matching an FTS5 query from [`crate::search::fts_query`] and
+    /// `filter`, best first; at most `limit` and never more than [`MAX_LIMIT`].
+    pub fn search_where(
+        &self,
+        account: &str,
+        fts: &str,
+        filter: &Filter,
+        limit: usize,
+    ) -> Result<Vec<Envelope>, StoreError> {
+        let conn = self.reader();
+        let sql = format!(
+            "SELECT {ENVELOPE} FROM search s JOIN messages m ON m.id = s.rowid
+             WHERE search MATCH :fts AND m.account = :account AND {VISIBLE} AND {FILTER}
+             ORDER BY s.rank LIMIT :limit"
+        );
+        let mailboxes = filter.mailboxes_json();
+        let run = || -> rusqlite::Result<Vec<Envelope>> {
+            let mut q = conn.prepare_cached(&sql)?;
+            let rows = q.query_map(
+                named_params! {
+                    ":fts": fts,
+                    ":account": account,
+                    ":mailboxes": mailboxes,
+                    ":unread": filter.unread,
+                    ":flagged": filter.flagged,
+                    ":flag": FLAGGED_JSON,
+                    ":attachments": filter.has_attachments,
+                    ":tag": filter.tag,
+                    ":limit": limit.min(MAX_LIMIT) as i64,
+                },
+                envelope,
+            )?;
+            rows.collect()
+        };
+        run().map_err(|e| match e {
+            rusqlite::Error::SqliteFailure(f, _) if f.code == rusqlite::ErrorCode::Unknown => {
+                StoreError::BadQuery
+            }
+            other => StoreError::Db(other),
+        })
+    }
+
+    /// Known correspondents whose address or name starts with `prefix` (case-insensitive), of
+    /// one account or of every account, most used first; at most `limit` and never more than
+    /// [`MAX_SUGGESTIONS`]. An empty prefix matches nothing.
+    pub fn suggest_addresses(
+        &self,
+        account: Option<&str>,
+        prefix: &str,
+        limit: usize,
+    ) -> Result<Vec<AddressRow>, StoreError> {
+        if prefix.is_empty() {
+            return Ok(Vec::new());
+        }
+        let pattern = format!("{}%", like_escape(&prefix.to_lowercase()));
+        let conn = self.reader();
+        let mut q = conn.prepare_cached(
+            "SELECT account, address, name, last_seen, as_sender, as_recipient FROM addresses
+             WHERE (?1 IS NULL OR account = ?1)
+               AND (address LIKE ?2 ESCAPE '\\' OR lower(name) LIKE ?2 ESCAPE '\\')
+             ORDER BY as_sender + as_recipient DESC, last_seen DESC, address, account
+             LIMIT ?3",
+        )?;
+        let rows = q.query_map(
+            params![account, pattern, limit.min(MAX_SUGGESTIONS) as i64],
+            |r| {
+                Ok(AddressRow {
+                    account: r.get(0)?,
+                    address: r.get(1)?,
+                    name: r.get(2)?,
+                    last_seen: r.get(3)?,
+                    as_sender: r.get::<_, i64>(4)? as u64,
+                    as_recipient: r.get::<_, i64>(5)? as u64,
+                })
+            },
+        )?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    /// Whether the account has mailed `address` (compared in lower case): it is a `To` or `Cc`
+    /// of a parsed message in one of the account's mailboxes with the `sent` role. Mail it only
+    /// received, whoever it names, never counts.
+    pub fn knows_address(&self, account: &str, address: &str) -> Result<bool, StoreError> {
+        let address = address.to_lowercase();
+        if !address.contains('@') || !address.chars().any(char::is_alphanumeric) {
+            return Ok(false);
+        }
+        let phrase = format!("addresses : \"{}\"", address.replace('"', "\"\""));
+        Ok(self
+            .reader()
+            .query_row(
+                "SELECT 1 FROM search s
+                 JOIN messages m ON m.id = s.rowid
+                 JOIN memberships mb ON mb.message = m.id
+                 JOIN mailboxes x ON x.account = mb.account AND x.id = mb.mailbox
+                 WHERE search MATCH ?3 AND m.account = ?1 AND m.available
+                   AND x.role = 'sent'
+                   AND EXISTS (
+                     SELECT 1 FROM json_each(m.to_json) j
+                       WHERE lower(json_extract(j.value, '$.address')) = ?2
+                     UNION ALL
+                     SELECT 1 FROM json_each(m.cc_json) j
+                       WHERE lower(json_extract(j.value, '$.address')) = ?2)
+                 LIMIT 1",
+                params![account, address, phrase],
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_some())
+    }
+
+    /// The role of the account's mailbox `id`, as the journal named it.
+    pub fn mailbox_role(&self, account: &str, id: &str) -> Result<Option<String>, StoreError> {
+        Ok(self
+            .reader()
+            .query_row(
+                "SELECT role FROM mailboxes WHERE account = ?1 AND id = ?2",
+                params![account, id],
+                |r| r.get::<_, Option<String>>(0),
+            )
+            .optional()?
+            .flatten())
+    }
+
+    /// Up to `limit` (at most [`MAX_LIMIT`]) blob hashes of the account's messages and objects
+    /// after `after`, in ascending order, for paging through what the account names.
+    pub fn blobs_of(
+        &self,
+        account: &str,
+        after: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<String>, StoreError> {
+        let conn = self.reader();
+        let mut q = conn.prepare_cached(
+            "SELECT blob FROM (SELECT blob FROM messages WHERE account = ?1
+                 UNION SELECT blob FROM objects WHERE account = ?1)
+             WHERE (?2 IS NULL OR blob > ?2) ORDER BY blob LIMIT ?3",
+        )?;
+        let rows = q.query_map(params![account, after, limit.min(MAX_LIMIT) as i64], |r| {
+            r.get(0)
+        })?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    /// Whether any account stores the message or object whose original is `blob`.
+    pub fn knows_blob(&self, blob: &str) -> Result<bool, StoreError> {
+        let conn = self.reader();
+        let found = conn
+            .query_row(
+                "SELECT 1 FROM messages WHERE blob = ?1
+                 UNION ALL SELECT 1 FROM objects WHERE blob = ?1 LIMIT 1",
+                params![blob],
+                |_| Ok(()),
+            )
+            .optional()?;
+        Ok(found.is_some())
+    }
+
+    /// Removes everything the database holds for the account, in one transaction: mailboxes,
+    /// messages, search entries, threads, addresses, collections and objects. Following the
+    /// account again starts from an empty checkpoint.
+    pub fn forget_account(&self, account: &str) -> Result<(), StoreError> {
+        let mut conn = lock(&self.write);
+        let tx = conn.transaction()?;
+        tx.execute(
+            "DELETE FROM search WHERE rowid IN (SELECT id FROM messages WHERE account = ?1)",
+            params![account],
+        )?;
+        tx.execute(
+            "DELETE FROM contact_search WHERE rowid IN (SELECT id FROM objects WHERE account = ?1)",
+            params![account],
+        )?;
+        for table in [
+            "memberships",
+            "messages",
+            "mailboxes",
+            "threads",
+            "thread_ids",
+            "addresses",
+            "placements",
+            "objects",
+            "collections",
+            "accounts",
+        ] {
+            tx.execute(
+                &format!("DELETE FROM {table} WHERE account = ?1"),
+                params![account],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+}
+
+fn like_escape(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        if matches!(c, '%' | '_' | '\\') {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out
+}
+
+fn note_addresses(
+    tx: &Transaction<'_>,
+    account: &str,
+    parsed: &Parsed,
+    seen: i64,
+) -> rusqlite::Result<()> {
+    let mut q = tx.prepare_cached(
+        "INSERT INTO addresses (account, address, name, last_seen, as_sender, as_recipient)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+         ON CONFLICT (account, address) DO UPDATE SET
+            name = COALESCE(excluded.name, name),
+            last_seen = MAX(last_seen, excluded.last_seen),
+            as_sender = as_sender + excluded.as_sender,
+            as_recipient = as_recipient + excluded.as_recipient",
+    )?;
+    let senders = parsed.from.iter().map(|a| (a, 1, 0));
+    let recipients = parsed.to.iter().chain(&parsed.cc).map(|a| (a, 0, 1));
+    for (addr, sent, received) in senders.chain(recipients).take(64) {
+        let Some(address) = addr.address.as_deref() else {
+            continue;
+        };
+        if address.len() > 320 || !address.contains('@') || address.chars().any(char::is_control) {
+            continue;
+        }
+        let name = addr
+            .name
+            .as_deref()
+            .filter(|n| n.chars().count() <= 200 && !n.chars().any(char::is_control));
+        q.execute(params![
+            account,
+            address.to_lowercase(),
+            name,
+            seen,
+            sent,
+            received
+        ])?;
+    }
+    Ok(())
 }
 
 fn upsert_mailbox(tx: &Transaction<'_>, account: &str, info: &MailboxInfo) -> rusqlite::Result<()> {
@@ -1148,6 +1750,187 @@ pub(crate) mod tests {
         }
         let list: Vec<Event> = events.iter().map(|(e, _)| (*e).clone()).collect();
         store.apply_page("box", &list).unwrap();
+    }
+
+    #[test]
+    fn filters_narrow_messages_threads_and_search() {
+        let (_d, store) = temp_store();
+        let plain = fixture("plain.eml");
+        let multi = fixture("multipart.eml");
+        let mut flagged = added(2, "Archive", "2", &multi);
+        if let EventBody::MessageAdded { flags, .. } = &mut flagged.body {
+            *flags = Flags::new(["\\Flagged", "\\Seen"]);
+        }
+        apply(
+            &store,
+            &[
+                (&added(1, "INBOX", "1", &plain), Some(&plain)),
+                (&flagged, Some(&multi)),
+            ],
+        );
+        let ids = |f: &Filter| -> Vec<String> {
+            store
+                .messages_where("box", f, None, 10)
+                .unwrap()
+                .into_iter()
+                .map(|e| e.id)
+                .collect()
+        };
+        let p = BlobHash::of(&plain).to_string();
+        let m = BlobHash::of(&multi).to_string();
+        assert_eq!(ids(&Filter::default()), vec![m.clone(), p.clone()]);
+        assert_eq!(ids(&Filter::mailbox("INBOX")), vec![p.clone()]);
+        assert_eq!(
+            ids(&Filter {
+                mailboxes: Some(vec![]),
+                ..Filter::default()
+            }),
+            Vec::<String>::new()
+        );
+        let flag = Filter {
+            flagged: Some(true),
+            ..Filter::default()
+        };
+        assert_eq!(ids(&flag), vec![m.clone()]);
+        assert_eq!(
+            ids(&Filter {
+                unread: Some(true),
+                ..Filter::default()
+            }),
+            vec![p.clone()]
+        );
+        assert_eq!(
+            ids(&Filter {
+                has_attachments: Some(true),
+                ..Filter::default()
+            }),
+            vec![m.clone()]
+        );
+        let envs = store.messages_where("box", &flag, None, 10).unwrap();
+        assert!(envs[0].flagged && !envs[0].unread);
+        let threads = store.threads_where("box", &flag, None, 10).unwrap();
+        assert_eq!(threads.len(), 1);
+        assert_eq!(threads[0].latest.id, m);
+        let page = store
+            .messages_where(
+                "box",
+                &Filter::default(),
+                Some((envs[0].sort_date, m.clone())),
+                10,
+            )
+            .unwrap();
+        assert_eq!(page.len(), 1);
+        let fts = crate::search::fts_query("seating").unwrap();
+        assert_eq!(
+            store
+                .search_where("box", &fts, &Filter::mailbox("INBOX"), 10)
+                .unwrap()
+                .len(),
+            0
+        );
+        assert_eq!(
+            store
+                .search_where("box", &fts, &Filter::mailbox("Archive"), 10)
+                .unwrap()
+                .len(),
+            1
+        );
+        let hostile_tag = Filter {
+            tag: Some("x' OR 1=1 --".into()),
+            mailboxes: Some(vec!["INBOX') OR ('1'='1".into()]),
+            ..Filter::default()
+        };
+        assert!(ids(&hostile_tag).is_empty());
+    }
+
+    #[test]
+    fn addresses_are_learned_suggested_and_forgotten() {
+        let (_d, store) = temp_store();
+        let plain = fixture("plain.eml");
+        apply(&store, &[(&added(1, "INBOX", "1", &plain), Some(&plain))]);
+        assert!(!store.knows_address("box", "PAT@example.com").unwrap());
+        let s = store.suggest_addresses(None, "pa", 10).unwrap();
+        assert_eq!(s[0].address, "pat@example.com");
+        assert_eq!(s[0].as_sender, 1);
+        assert_eq!(s[0].name.as_deref(), Some("Pat Doe"));
+        assert_eq!(
+            store
+                .suggest_addresses(Some("box"), "pat d", 10)
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(store.suggest_addresses(None, "", 10).unwrap().is_empty());
+        assert!(store.suggest_addresses(None, "%", 10).unwrap().is_empty());
+        assert!(store.suggest_addresses(None, "_", 10).unwrap().is_empty());
+        assert!(store.knows_blob(&BlobHash::of(&plain).to_string()).unwrap());
+        assert_eq!(
+            store.blobs_of("box", None, 10).unwrap(),
+            vec![BlobHash::of(&plain).to_string()]
+        );
+        assert!(
+            store
+                .blobs_of("box", Some(&BlobHash::of(&plain).to_string()), 10)
+                .unwrap()
+                .is_empty()
+        );
+        store.forget_account("box").unwrap();
+        assert!(!store.knows_address("box", "pat@example.com").unwrap());
+        assert!(!store.knows_blob(&BlobHash::of(&plain).to_string()).unwrap());
+        assert!(store.accounts().unwrap().is_empty());
+        assert!(store.messages("box", None, None, 10).unwrap().is_empty());
+        let fts = crate::search::fts_query("tomatoes").unwrap();
+        assert!(store.search("box", &fts, 10).unwrap().is_empty());
+    }
+
+    fn mailbox(seq: u64, id: &str, role: skein_core::MailboxRole) -> Event {
+        ev(
+            seq,
+            EventBody::MailboxUpserted {
+                mailbox: MailboxInfo {
+                    id: id.into(),
+                    path: id.into(),
+                    role: Some(role),
+                    selectable: true,
+                    label: false,
+                },
+            },
+        )
+    }
+
+    #[test]
+    fn only_mail_the_account_sent_makes_an_address_known() {
+        use skein_core::MailboxRole;
+        let (_d, store) = temp_store();
+        let hostile = b"From: Stranger <stranger@evil.example>\r\nTo: box@example.com\r\nCc: exfil@evil.example, Pat <pat@example.com>\r\nSubject: Hi\r\nMessage-ID: <h@evil.example>\r\n\r\nHello\r\n";
+        let junk = b"From: Junk <junk@evil.example>\r\nTo: drop@evil.example\r\nSubject: Win\r\nMessage-ID: <j@evil.example>\r\n\r\nWin\r\n";
+        let sent = b"From: Box <box@example.com>\r\nTo: Pat <PAT@example.com>\r\nCc: sam@example.org\r\nSubject: Re: Hi\r\nMessage-ID: <s@example.com>\r\n\r\nThanks\r\n";
+        apply(
+            &store,
+            &[
+                (&mailbox(1, "INBOX", MailboxRole::Inbox), None),
+                (&mailbox(2, "Junk", MailboxRole::Junk), None),
+                (&mailbox(3, "Sent", MailboxRole::Sent), None),
+                (&added(4, "INBOX", "1", hostile), Some(hostile)),
+                (&added(5, "Junk", "2", junk), Some(junk)),
+            ],
+        );
+        for address in [
+            "stranger@evil.example",
+            "exfil@evil.example",
+            "pat@example.com",
+            "junk@evil.example",
+            "drop@evil.example",
+        ] {
+            assert!(!store.knows_address("box", address).unwrap(), "{address}");
+        }
+        apply(&store, &[(&added(6, "Sent", "3", sent), Some(sent))]);
+        assert!(store.knows_address("box", "pat@example.com").unwrap());
+        assert!(store.knows_address("box", "SAM@example.org").unwrap());
+        assert!(!store.knows_address("box", "exfil@evil.example").unwrap());
+        assert!(!store.knows_address("box", "example.org").unwrap());
+        assert!(!store.knows_address("box", "\"").unwrap());
+        assert!(!store.knows_address("other", "pat@example.com").unwrap());
     }
 
     #[test]

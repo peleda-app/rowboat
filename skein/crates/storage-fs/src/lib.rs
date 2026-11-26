@@ -1,11 +1,16 @@
 //! [`Objects`] as files under one root directory.
 //!
-//! One process per directory: [`FsObjects::open`] takes an exclusive advisory lock on
-//! `<root>/.lock` and fails with [`OpenError::Locked`] while another handle holds it.
+//! Several processes may share a directory: every write takes an exclusive advisory lock on one of
+//! the stripe files under `<root>/.locks` for its read-compare-write, so compare-and-swap holds
+//! between processes. One of them is the owner: [`FsObjects::open`] also takes an exclusive lock on
+//! `<root>/.lock` for the life of the handle and fails with [`OpenError::Locked`] while another
+//! owner holds it; [`FsObjects::open_shared`] takes no owner lock, for management tools working
+//! beside a running owner. Directories are created and pruned under `<root>/.locks/tree`: writes
+//! and deletes hold it shared while they create or remove a file and sync its directory, and
+//! pruning the directories a delete left empty holds it exclusive, so pruning never removes a
+//! directory a write or delete in another stripe is using.
 
-use std::collections::hash_map::DefaultHasher;
 use std::fs::{self, File, OpenOptions, TryLockError};
-use std::hash::{Hash, Hasher};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -21,14 +26,16 @@ const VERSION_LEN: usize = 26;
 const HEADER_LEN: usize = MAGIC.len() + VERSION_LEN;
 const FILE_SUFFIX: &str = "~obj";
 const LOCK_FILE: &str = ".lock";
+const STRIPE_DIR: &str = ".locks";
 const TEMP_PREFIX: &str = ".tmp-";
 const STRIPES: usize = 64;
+const TREE_LOCK: &str = "tree";
 const MAX_NAME: usize = 255;
 
 /// Why a store could not be opened.
 #[derive(Debug, thiserror::Error)]
 pub enum OpenError {
-    /// Another handle, in this process or another one, already holds the directory.
+    /// Another owner handle, in this process or another one, already holds the directory.
     #[error("storage directory {root} is in use by another process (one process per directory)")]
     Locked {
         /// The root directory.
@@ -47,8 +54,11 @@ pub enum OpenError {
 ///   before `put` returns, so a crash leaves either the old or the new value, never a mix.
 /// - Every write gets a fresh random version, even when the bytes are the same; a read returns the
 ///   value and the version written together.
-/// - Compare-and-swap holds between all tasks sharing this handle. Other processes are kept out by
-///   the lock taken in [`FsObjects::open`], which lives as long as the handle.
+/// - Compare-and-swap holds between all tasks and all processes using the directory, owner or
+///   shared: a write checks the current version and replaces the file while holding its key's
+///   stripe lock, in-process and on a lock file under `<root>/.locks`. Reads take no lock: a file
+///   is only ever replaced whole by rename, so a read sees the old or the new value, never a mix.
+/// - At most one owner handle per directory at a time ([`FsObjects::open`]).
 /// - Symbolic links inside the root are never followed: reads and writes through them fail and
 ///   `list` skips them.
 pub struct FsObjects {
@@ -58,31 +68,44 @@ pub struct FsObjects {
 struct Inner {
     root: PathBuf,
     stripes: Box<[Mutex<()>]>,
-    _lock: File,
+    _owner: Option<File>,
 }
 
 impl FsObjects {
-    /// Opens the store at `root`, creating the directory (mode `0700` on unix) when missing, and
-    /// takes the directory lock. Fails with [`OpenError::Locked`] when another handle holds it.
+    /// Opens the store at `root` as its owner, creating the directory (mode `0700` on unix) when
+    /// missing, and takes the owner lock for the life of the handle. Fails with
+    /// [`OpenError::Locked`] when another owner holds it; shared handles do not count.
     pub fn open(root: impl AsRef<Path>) -> Result<Self, OpenError> {
-        let root = root.as_ref();
+        Self::open_with(root.as_ref(), true)
+    }
+
+    /// Opens the store at `root` without taking the owner lock, so it works beside a running
+    /// owner; writes stay compare-and-swap with the owner's.
+    pub fn open_shared(root: impl AsRef<Path>) -> Result<Self, OpenError> {
+        Self::open_with(root.as_ref(), false)
+    }
+
+    fn open_with(root: &Path, owner: bool) -> Result<Self, OpenError> {
         dir_builder(true).create(root)?;
         let root = root.canonicalize()?;
-        let mut options = OpenOptions::new();
-        options.read(true).write(true).create(true).truncate(false);
-        file_mode(&mut options);
-        let lock = options.open(root.join(LOCK_FILE))?;
-        match lock.try_lock() {
-            Ok(()) => {}
-            Err(TryLockError::WouldBlock) => return Err(OpenError::Locked { root }),
-            Err(TryLockError::Error(e)) => return Err(OpenError::Io(e)),
-        }
+        ensure_dirs(&root, &[STRIPE_DIR.to_owned()])?;
+        let owner = if owner {
+            let lock = open_lock_file(&root.join(LOCK_FILE))?;
+            match lock.try_lock() {
+                Ok(()) => {}
+                Err(TryLockError::WouldBlock) => return Err(OpenError::Locked { root }),
+                Err(TryLockError::Error(e)) => return Err(OpenError::Io(e)),
+            }
+            Some(lock)
+        } else {
+            None
+        };
         let stripes = (0..STRIPES).map(|_| Mutex::new(())).collect();
         Ok(Self {
             inner: Arc::new(Inner {
                 root,
                 stripes,
-                _lock: lock,
+                _owner: owner,
             }),
         })
     }
@@ -93,9 +116,7 @@ impl FsObjects {
     }
 
     fn stripe(&self, key: &ObjectKey) -> &Mutex<()> {
-        let mut h = DefaultHasher::new();
-        key.as_str().hash(&mut h);
-        &self.inner.stripes[(h.finish() as usize) % STRIPES]
+        &self.inner.stripes[stripe_of(key)]
     }
 
     async fn blocking<T: Send + 'static>(
@@ -107,6 +128,28 @@ impl FsObjects {
             .await
             .map_err(StorageError::backend)?
     }
+}
+
+/// FNV-1a, so every process and every build maps a key to the same stripe.
+fn stripe_of(key: &ObjectKey) -> usize {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in key.as_str().bytes() {
+        h ^= u64::from(b);
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    (h % STRIPES as u64) as usize
+}
+
+fn open_lock_file(path: &Path) -> io::Result<File> {
+    if fs::symlink_metadata(path).is_ok_and(|m| !m.is_file()) {
+        return Err(io::Error::other(
+            "refusing a lock file that is not a plain file",
+        ));
+    }
+    let mut options = OpenOptions::new();
+    options.read(true).write(true).create(true).truncate(false);
+    file_mode(&mut options);
+    options.open(path)
 }
 
 #[cfg(unix)]
@@ -323,6 +366,32 @@ fn write_atomic(dir: &Path, file: &str, version: &str, value: &[u8]) -> io::Resu
 }
 
 impl Inner {
+    fn locked<T>(
+        &self,
+        key: &ObjectKey,
+        f: impl FnOnce() -> Result<T, StorageError>,
+    ) -> Result<T, StorageError> {
+        let path = self
+            .root
+            .join(STRIPE_DIR)
+            .join(format!("{:02x}", stripe_of(key)));
+        let lock = open_lock_file(&path).map_err(io)?;
+        lock.lock().map_err(io)?;
+        let result = f();
+        drop(lock);
+        result
+    }
+
+    fn tree(&self, exclusive: bool) -> Result<File, StorageError> {
+        let lock = open_lock_file(&self.root.join(STRIPE_DIR).join(TREE_LOCK)).map_err(io)?;
+        if exclusive {
+            lock.lock().map_err(io)?;
+        } else {
+            lock.lock_shared().map_err(io)?;
+        }
+        Ok(lock)
+    }
+
     fn put(&self, key: &ObjectKey, value: &[u8], expect: &Expect) -> Result<String, StorageError> {
         let loc = Location::of(key)?;
         let current = if dirs_exist(&self.root, &loc.dirs)? {
@@ -335,16 +404,11 @@ impl Inner {
         }
         let version = Ulid::generate().to_string();
         let dir = loc.dir(&self.root);
-        let mut attempts = 0;
-        loop {
-            let result = ensure_dirs(&self.root, &loc.dirs)
-                .and_then(|()| write_atomic(&dir, &loc.file, &version, value));
-            match result {
-                Ok(()) => return Ok(version),
-                Err(e) if e.kind() == io::ErrorKind::NotFound && attempts < 5 => attempts += 1,
-                Err(e) => return Err(io(e)),
-            }
-        }
+        let _tree = self.tree(false)?;
+        ensure_dirs(&self.root, &loc.dirs)
+            .and_then(|()| write_atomic(&dir, &loc.file, &version, value))
+            .map_err(io)?;
+        Ok(version)
     }
 
     fn delete(&self, key: &ObjectKey, expect: &Expect) -> Result<(), StorageError> {
@@ -365,12 +429,15 @@ impl Inner {
         if !holds(current.as_deref(), expect) {
             return Err(StorageError::Conflict);
         }
+        let shared = self.tree(false)?;
         match fs::remove_file(&path) {
             Ok(()) => {}
             Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
             Err(e) => return Err(io(e)),
         }
         sync_dir(&dir).map_err(io)?;
+        drop(shared);
+        let _tree = self.tree(true)?;
         self.prune(&dir);
         Ok(())
     }
@@ -499,14 +566,18 @@ impl Objects for FsObjects {
     ) -> Result<Version, StorageError> {
         let _guard = self.stripe(key).lock().await;
         let key = key.clone();
-        self.blocking(move |inner| inner.put(&key, &value, &expect).map(Version))
-            .await
+        self.blocking(move |inner| {
+            inner
+                .locked(&key, || inner.put(&key, &value, &expect))
+                .map(Version)
+        })
+        .await
     }
 
     async fn delete(&self, key: &ObjectKey, expect: Expect) -> Result<(), StorageError> {
         let _guard = self.stripe(key).lock().await;
         let key = key.clone();
-        self.blocking(move |inner| inner.delete(&key, &expect))
+        self.blocking(move |inner| inner.locked(&key, || inner.delete(&key, &expect)))
             .await
     }
 
@@ -548,6 +619,83 @@ mod tests {
         ));
         drop(first);
         FsObjects::open(dir.path()).unwrap();
+    }
+
+    #[tokio::test]
+    async fn shared_handles_work_beside_the_owner() {
+        let dir = tempfile::tempdir().unwrap();
+        let owner = FsObjects::open(dir.path()).unwrap();
+        let shared = FsObjects::open_shared(dir.path()).unwrap();
+        let other = FsObjects::open_shared(dir.path()).unwrap();
+        let k = key("t/shared");
+        let v = shared
+            .put(&k, Bytes::from_static(b"one"), Expect::Absent)
+            .await
+            .unwrap();
+        assert!(matches!(
+            owner
+                .put(&k, Bytes::from_static(b"two"), Expect::Absent)
+                .await,
+            Err(StorageError::Conflict)
+        ));
+        let v2 = owner
+            .put(&k, Bytes::from_static(b"two"), Expect::Version(v.clone()))
+            .await
+            .unwrap();
+        assert!(matches!(
+            other.delete(&k, Expect::Version(v)).await,
+            Err(StorageError::Conflict)
+        ));
+        assert_eq!(&other.get(&k).await.unwrap().unwrap().0[..], b"two");
+        other.delete(&k, Expect::Version(v2)).await.unwrap();
+        assert!(owner.get(&k).await.unwrap().is_none());
+        assert!(matches!(
+            FsObjects::open(dir.path()),
+            Err(OpenError::Locked { .. })
+        ));
+        drop(shared);
+        drop(other);
+        assert!(matches!(
+            FsObjects::open(dir.path()),
+            Err(OpenError::Locked { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn conformance_over_a_shared_handle() {
+        let dir = tempfile::tempdir().unwrap();
+        let _owner = FsObjects::open(dir.path()).unwrap();
+        skein_storage::testing::all_over_objects(Arc::new(
+            FsObjects::open_shared(dir.path()).unwrap(),
+        ))
+        .await;
+    }
+
+    #[test]
+    fn stripes_are_stable_across_builds() {
+        assert_eq!(stripe_of(&key("tenants/acme/heads/box")), 63);
+        assert_eq!(stripe_of(&key("t/a")), 63);
+        assert_eq!(stripe_of(&key("t/b")), 50);
+        let used: std::collections::BTreeSet<_> = (0..1000)
+            .map(|i| stripe_of(&key(&format!("t/k{i}"))))
+            .collect();
+        assert_eq!(used.len(), STRIPES);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_symlinked_lock_file_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let store = FsObjects::open_shared(dir.path()).unwrap();
+        let k = key("t/a");
+        let lock = store
+            .root()
+            .join(STRIPE_DIR)
+            .join(format!("{:02x}", stripe_of(&k)));
+        std::os::unix::fs::symlink(outside.path().join("x"), &lock).unwrap();
+        assert!(store.put(&k, Bytes::new(), Expect::Any).await.is_err());
+        assert!(!outside.path().join("x").exists());
     }
 
     #[tokio::test]
@@ -686,6 +834,27 @@ mod tests {
         assert_eq!(mode(store.root()), 0o700);
         assert_eq!(mode(&store.root().join("t")), 0o700);
         assert_eq!(mode(&store.root().join("t").join("a~obj")), 0o600);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+    async fn pruning_never_breaks_a_write_beside_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(FsObjects::open(dir.path()).unwrap());
+        let tasks: Vec<_> = (0..8)
+            .map(|i| {
+                let store = store.clone();
+                tokio::spawn(async move {
+                    let k = key(&format!("t/shared/deep/k{i}"));
+                    for _ in 0..60 {
+                        store.put(&k, Bytes::new(), Expect::Any).await.unwrap();
+                        store.delete(&k, Expect::Any).await.unwrap();
+                    }
+                })
+            })
+            .collect();
+        for t in tasks {
+            t.await.unwrap();
+        }
     }
 
     #[test]

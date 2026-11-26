@@ -1,0 +1,27 @@
+[package]
+name = "rowboat-discover-autoconfig"
+description = "Mail server discovery from the domain's own autoconfig file over HTTPS"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+readme = "docs/README.md"
+
+[package.metadata.dojo]
+kind = "implementation"
+implements = "rowboat-discover"
+
+[dependencies]
+rowboat-discover.workspace = true
+async-trait.workspace = true
+quick-xml.workspace = true
+
+[dev-dependencies]
+rowboat-discover = { workspace = true, features = ["testing"] }
+proptest.workspace = true
+tokio.workspace = true
+
+[lints]
+workspace = true

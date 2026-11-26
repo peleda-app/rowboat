@@ -4,11 +4,12 @@ The mail contract (`skein-mail`) on IMAP servers. `ImapProvider` signs in over T
 
 ## Public API
 
-- `ImapProvider::new(settings, credentials) -> Result<ImapProvider, MailError>` checks the settings before anything is sent: `Config` for an empty host, plain text to a host that is not loopback (unless `allow_insecure_plain`), or an extra root that is not a usable CA certificate. A password signs in with `LOGIN`, an access token with `AUTHENTICATE XOAUTH2`.
-- `ImapProvider::with_timeout(d)`: every command, the connection and the sign-in get `d` (default two minutes); a server that does not answer in time is `Network`.
+- `ImapProvider::new(settings, credentials) -> Result<ImapProvider, MailError>` checks the settings before anything is sent: `Config` for an empty host or an extra root that is not a usable CA certificate, `Insecure` for plain text to a host that is not loopback (unless `allow_insecure_plain`). A password signs in with `LOGIN`, an access token with `AUTHENTICATE XOAUTH2`.
+- `ImapProvider::with_timeout(d)`: every command, the connection and the sign-in get `d` (default two minutes); a server that does not answer in time is `Timeout`.
 - `ImapProvider::with_idle_renew(d)`: a watch ends and restarts its `IDLE` after `d` (default ten minutes).
 - `MailProvider::connect` opens one connection per session. `MailProvider::watch` is described below.
 - `ImapSettings`, `Security`, `MAX_WATCH_CONNECTIONS` (3).
+- `probe(host, port, security, roots, timeout) -> Result<ImapProbe, MailError>`: checks a server before sign-in (see "Probe").
 
 ## Settings
 
@@ -21,7 +22,7 @@ The mail contract (`skein-mail`) on IMAP servers. `ImapProvider` signs in over T
 | `roots` | none | `TlsRoots` trusted besides the built-in web roots; not serialized |
 | `allow_insecure_plain` | `false` | Allows `plain` to a host that is not `localhost`, `127.0.0.0/8` or `::1` |
 
-TLS uses rustls with the `webpki-roots` set plus `roots`; verification can never be turned off. STARTTLS that the server refuses is a `Config` error, never a fallback to plain text. Credentials are sent in plain text only to loopback hosts or with `allow_insecure_plain`; the check runs again on the live connection right before sign-in.
+TLS uses rustls with the `webpki-roots` set plus `roots`; verification can never be turned off. STARTTLS that the server refuses is `Insecure`, never a fallback to plain text; a failed handshake or certificate is `Tls`. At most 64 untagged lines are read while waiting for the answer to `STARTTLS`. Credentials are sent in plain text only to loopback hosts or with `allow_insecure_plain`; the check runs again on the live connection right before sign-in.
 
 ## Ids and cursors
 
@@ -74,10 +75,18 @@ A connection lost or timed out after a write command left is `Uncertain`, and so
 
 `watch(mailboxes)` returns `None` when the server lacks `IDLE`. With `NOTIFY` and several mailboxes it uses one connection (`NOTIFY SET` for `MessageNew MessageExpunge FlagChange`); otherwise one connection per mailbox for the first three. Unknown or unselectable mailboxes are left out; with none left, `INBOX` is watched. `IDLE` is renewed every ten minutes; a dead connection ends the watch with `Network`. `next` returns the ids of the mailboxes that changed. Dropping the watch stops its connections.
 
+## Probe
+
+`probe(host, port, security, roots, timeout)` checks a server for discovery without signing in: it connects, verifies TLS against the web roots and `roots` (after `STARTTLS` for `Starttls`), reads the greeting, sends `CAPABILITY` when the greeting carried none, then `LOGOUT`. Nothing else is sent: never a user name, a secret or a mailbox command. `ImapProbe` holds the capabilities (upper case, visible ASCII, each at most 64 bytes, at most 64 of them), `password_sign_in` (no `LOGINDISABLED`) and `oauth` (`AUTH=XOAUTH2` or `AUTH=OAUTHBEARER`).
+
+The whole probe ends within `timeout` (`Timeout`) and reads at most 64 KiB in at most 64 lines of at most 8 KiB (`Protocol` beyond). `Plain` is always `Insecure`, so is a server without `STARTTLS`; a failed handshake or certificate is `Tls`; a `BYE` greeting or a refused `CAPABILITY` is `Refused`; a server that does not announce `IMAP4rev1` or `IMAP4rev2` is `Protocol`. The reader is fuzzed (`imap_probe` in `skein/fuzz`); tests run hostile greetings, overlong lines, line floods, untrusted and wrong certificates, plain servers asked for STARTTLS, TLS asked of a plain port and silent servers, and check that no `LOGIN` or `AUTHENTICATE` ever reaches the fake server.
+
 ## Errors
 
 - Refused sign-in: `Auth`; a refusal that carries `LIMIT`, `UNAVAILABLE`, `INUSE`, `THROTTLED` or "Too many simultaneous connections" is `Throttled` (without a delay, IMAP gives none).
-- Timeouts, I/O and lost connections: `Network`.
+- No answer within the timeout: `Timeout`. I/O errors and lost connections: `Network`. Both mean the outcome of a write is unknown and the session is not reused.
+- A failed TLS handshake or certificate check, or TLS where plain text was expected (and the reverse): `Tls`. No STARTTLS offered, or plain text to a remote host: `Insecure`.
+- A tagged `NO` outside a write: `Refused`, or `Quota` when it carries `[OVERQUOTA]`. A `BYE` greeting: `Refused`.
 - A mailbox that does not exist or cannot be selected: `MailboxNotFound`.
 - Errors never carry server text, which can echo mailbox names. Logs carry counts and timings only.
 

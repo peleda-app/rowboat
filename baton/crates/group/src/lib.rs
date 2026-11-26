@@ -318,10 +318,21 @@ struct Body {
 }
 
 /// One signed entry of a group log.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Entry {
     body: Body,
     signature: Signature,
+}
+
+impl Clone for Entry {
+    fn clone(&self) -> Self {
+        #[cfg(test)]
+        state::work::add(1);
+        Self {
+            body: self.body.clone(),
+            signature: self.signature,
+        }
+    }
 }
 
 impl Entry {
@@ -362,6 +373,8 @@ impl Entry {
 
     /// The wire form.
     pub fn encode(&self) -> Vec<u8> {
+        #[cfg(test)]
+        state::work::add(1);
         postcard::to_stdvec(self).expect("an entry serializes")
     }
 
@@ -371,6 +384,8 @@ impl Entry {
     }
 
     fn verify_signature(&self) -> Result<(), GroupError> {
+        #[cfg(test)]
+        state::work::add(1);
         let bytes = postcard::to_stdvec(&self.body).expect("an entry serializes");
         self.body
             .signer
@@ -472,6 +487,8 @@ impl GroupLog {
 
     /// Verifies and appends one entry made elsewhere.
     pub fn apply(&mut self, entry: Entry) -> Result<(), GroupError> {
+        #[cfg(test)]
+        state::work::add(1);
         entry.verify_signature()?;
         if entry.body.group != self.state.group
             || entry.body.seq != self.entries.len() as u64

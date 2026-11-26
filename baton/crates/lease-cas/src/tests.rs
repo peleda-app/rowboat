@@ -591,3 +591,33 @@ async fn a_reused_answer_never_outlives_a_quarter_ttl_so_a_dead_holder_still_mov
         .expect("the dead holder's lease moves although answers are reused");
     assert!(taken.fence > held.fence);
 }
+
+#[tokio::test]
+async fn forgetting_removes_only_a_record_nobody_holds() {
+    let s = setup();
+    let me = profile("n1", NodeClass::Server);
+    s.live.heartbeat(&g(), &me, Timestamp(T0)).await.unwrap();
+    let lease = s
+        .leases
+        .acquire(&g(), &key("gone"), &me)
+        .await
+        .unwrap()
+        .unwrap();
+    let name = RecordName::new("lease/gone").unwrap();
+    assert!(!s.leases.forget(&g(), &key("gone")).await.unwrap());
+    assert!(s.state.get(&g(), &name).await.unwrap().is_some());
+    s.leases.release(&lease).await.unwrap();
+    assert!(s.leases.forget(&g(), &key("gone")).await.unwrap());
+    assert!(s.state.get(&g(), &name).await.unwrap().is_none());
+    assert!(s.leases.forget(&g(), &key("never")).await.unwrap());
+    let again = s
+        .leases
+        .acquire(&g(), &key("gone"), &me)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        again.fence > lease.fence,
+        "tokens never go back after a forget"
+    );
+}

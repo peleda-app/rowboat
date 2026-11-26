@@ -322,6 +322,55 @@ async fn revoked_and_missing_grants_are_reported() {
     let _ = Duration::ZERO;
 }
 
+#[tokio::test]
+async fn a_grant_replaced_or_removed_by_another_process_reaches_the_cached_token() {
+    let f = fixture();
+    let client = google();
+    let in_an_hour = Some(Timestamp::now().plus_ms(3_600_000));
+    f.manager
+        .store(
+            &f.tenant,
+            &f.account,
+            &Grant::external("token-a", in_an_hour, None),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        f.manager
+            .access_token(&f.tenant, &f.account, &client)
+            .await
+            .unwrap(),
+        "token-a"
+    );
+
+    let cli = TokenManager::new(
+        f.endpoint.clone(),
+        f.control.clone(),
+        Arc::new(LocalKeyring::from_master([3; 32], f.control.clone())),
+    );
+    cli.store(
+        &f.tenant,
+        &f.account,
+        &Grant::external("token-b", in_an_hour, None),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        f.manager
+            .access_token(&f.tenant, &f.account, &client)
+            .await
+            .unwrap(),
+        "token-b"
+    );
+
+    cli.forget(&f.tenant, &f.account).await.unwrap();
+    assert!(matches!(
+        f.manager.access_token(&f.tenant, &f.account, &client).await,
+        Err(OAuthError::NoGrant)
+    ));
+    assert!(f.endpoint.requests().is_empty());
+}
+
 #[test]
 fn grants_never_show_tokens() {
     let g = Grant::external("secret-access", None, Some("secret-refresh".into()));

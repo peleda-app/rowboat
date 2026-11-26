@@ -132,8 +132,8 @@ impl fmt::Debug for SmtpSender {
 impl SmtpSender {
     /// A client for `settings` signing in with `credentials` when a user name is set: a password
     /// with `AUTH PLAIN` (or `LOGIN` when `PLAIN` is not offered), an access token with
-    /// `XOAUTH2`. `Invalid` before anything is sent for plain text to a host that is not
-    /// loopback, a user name without credentials, an empty host, an `EHLO` name that is not a
+    /// `XOAUTH2`. `Insecure` before anything is sent for plain text to a host that is not
+    /// loopback; `Invalid` for a user name without credentials, an empty host, an `EHLO` name that is not a
     /// name, or an extra root that is not a certificate. Credentials without a user name are
     /// not used.
     pub fn new(
@@ -149,7 +149,7 @@ impl SmtpSender {
             return Err(SendError::Invalid("the EHLO name is not a name".into()));
         }
         if settings.security == Security::Plain && !is_loopback(&host) {
-            return Err(SendError::Invalid(
+            return Err(SendError::Insecure(
                 "a connection without TLS is allowed only to loopback hosts".into(),
             ));
         }
@@ -251,6 +251,63 @@ fn tls_config(extra: &TlsRoots) -> Result<ClientConfig, SendError> {
     .expect("aws-lc-rs supports the default TLS versions")
     .with_root_certificates(roots)
     .with_no_client_auth())
+}
+
+/// What a submission server said about itself before sign-in.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SmtpProbe {
+    /// The `AUTH` mechanisms offered after TLS, upper case, at most 32.
+    pub auth: Vec<String>,
+    /// A password can sign in: `AUTH PLAIN` or `AUTH LOGIN` is offered after TLS.
+    pub password_sign_in: bool,
+    /// `AUTH XOAUTH2` or `AUTH OAUTHBEARER` is offered after TLS.
+    pub oauth: bool,
+    /// The largest message the server takes, when it said so.
+    pub max_size: Option<u64>,
+}
+
+/// Checks a submission server without signing in: connects, verifies TLS against the web roots
+/// and `roots` (after `STARTTLS` for [`Security::Starttls`]), reads the greeting, says `EHLO`
+/// and `QUIT`. Nothing else is sent, never a user name, a secret or a message.
+///
+/// The whole probe ends within `timeout` ([`SendError::Timeout`]); replies keep the client's
+/// caps (lines of 4 KiB, 128 lines a reply). [`Security::Plain`] and a server without
+/// `STARTTLS` are [`SendError::Insecure`]; a failed handshake or certificate is
+/// [`SendError::Tls`]; a greeting other than `220` is [`SendError::Unavailable`].
+pub async fn probe(
+    host: &str,
+    port: u16,
+    security: Security,
+    roots: &TlsRoots,
+    timeout: Duration,
+) -> Result<SmtpProbe, SendError> {
+    if security == Security::Plain {
+        return Err(SendError::Insecure(
+            "a probe never runs in plain text".into(),
+        ));
+    }
+    let host = host.trim();
+    if host.is_empty() || port == 0 {
+        return Err(SendError::Invalid("the host or port is empty".into()));
+    }
+    let config = Config {
+        host: host.to_owned(),
+        port,
+        security,
+        login: None,
+        helo: "localhost".into(),
+        timeout,
+        data_timeout: timeout,
+    };
+    let tls = Arc::new(tls_config(roots)?);
+    tokio::time::timeout(timeout, async {
+        let session = session::Session::open(&config, tls).await?;
+        let probe = session.probe();
+        session.quit().await;
+        Ok(probe)
+    })
+    .await
+    .map_err(|_| SendError::Timeout("the server did not answer the probe in time".into()))?
 }
 
 #[cfg(test)]

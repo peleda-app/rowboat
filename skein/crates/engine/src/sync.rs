@@ -95,7 +95,9 @@ impl Engine {
                     EngineError::Mail(MailError::Throttled { .. }) => {
                         skein_metrics::SyncFailure::Throttled
                     }
-                    EngineError::Mail(MailError::Network(_)) => skein_metrics::SyncFailure::Network,
+                    EngineError::Mail(m) if m.connection_lost() => {
+                        skein_metrics::SyncFailure::Network
+                    }
                     EngineError::NotOwner => skein_metrics::SyncFailure::NotOwner,
                     _ => skein_metrics::SyncFailure::Other,
                 });
@@ -356,7 +358,8 @@ impl Engine {
                         .blobs
                         .put(&config.tenant, raw.bytes.clone())
                         .await?;
-                    if let Some(found) = skein_itip::imip::find(&raw.bytes)
+                    if self.inspect_messages
+                        && let Some(found) = skein_itip::imip::find(&raw.bytes)
                         && let Ok(summary) = skein_itip::summary(&found.calendar)
                     {
                         let size = found.calendar.len() as u64;

@@ -29,6 +29,7 @@ baton-core.workspace = true
 baton-lease = { workspace = true, features = ["testing"] }
 baton-lease-cas.workspace = true
 baton-state.workspace = true
+skein-core.workspace = true
 skein-storage = { workspace = true, features = ["testing"] }
 tempfile.workspace = true
 tokio.workspace = true

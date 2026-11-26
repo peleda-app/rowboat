@@ -332,7 +332,7 @@ impl Engine {
                     }
                     let outcome = match opened.apply(&command.body, content).await {
                         Ok(o) => o,
-                        Err(MailError::Network(_)) => WriteOutcome::Uncertain,
+                        Err(e) if e.connection_lost() => WriteOutcome::Uncertain,
                         Err(MailError::MailboxNotFound) => WriteOutcome::Failed {
                             reason: "mailbox_not_found".into(),
                         },
@@ -341,6 +341,9 @@ impl Engine {
                                 e,
                                 MailError::Auth
                                     | MailError::Config(_)
+                                    | MailError::Insecure(_)
+                                    | MailError::Tls(_)
+                                    | MailError::Quota
                                     | MailError::Throttled { .. }
                             ) {
                                 self.storage
@@ -665,6 +668,9 @@ impl Engine {
         else {
             return Ok(Err("unsupported"));
         };
+        if !self.inspect_messages {
+            return Ok(Err("unsupported"));
+        }
         let Some(raw) = self.storage.blobs.get(&config.tenant, invitation).await? else {
             return Ok(Err("blob_missing"));
         };

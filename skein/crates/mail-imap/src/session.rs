@@ -84,7 +84,7 @@ impl ImapSession {
     }
 
     fn settle<T>(&mut self, result: Result<T, MailError>) -> Result<T, MailError> {
-        if matches!(result, Err(MailError::Network(_))) {
+        if result.as_ref().is_err_and(MailError::connection_lost) {
             self.broken = true;
         }
         result

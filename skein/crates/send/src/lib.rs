@@ -260,10 +260,53 @@ pub enum SendError {
     /// The envelope, the message or the configuration cannot be sent as it is.
     #[error("invalid: {0}")]
     Invalid(String),
-    /// The service could not be reached, or would not start a session (connection refused, TLS
-    /// failure, a `421` greeting).
+    /// The service could not be reached, or would not start a session (connection refused, a
+    /// `421` greeting).
     #[error("unavailable: {0}")]
     Unavailable(String),
+    /// The TLS handshake or the certificate check failed, or the server answered in plain text
+    /// where TLS was expected, before anything was sent.
+    #[error("TLS failed: {0}")]
+    Tls(String),
+    /// The settings or the server would need credentials or the message sent without
+    /// encryption (plain text to a remote host, no STARTTLS offered); nothing was sent.
+    #[error("insecure connection refused: {0}")]
+    Insecure(String),
+    /// The service did not answer within the deadline before the message was complete, so it
+    /// cannot have taken it. A deadline missed after the whole message is
+    /// [`SendError::Uncertain`].
+    #[error("timed out: {0}")]
+    Timeout(String),
+}
+
+/// The kind of a [`SendError`], without text: what callers match on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SendCause {
+    /// [`SendError::Auth`].
+    Auth,
+    /// [`SendError::Refused`].
+    Refused,
+    /// [`SendError::RecipientsRefused`].
+    RecipientsRefused,
+    /// [`SendError::Temporary`].
+    Temporary,
+    /// [`SendError::Throttled`].
+    Throttled,
+    /// [`SendError::Uncertain`].
+    Uncertain,
+    /// [`SendError::TooLarge`].
+    TooLarge,
+    /// [`SendError::Invalid`].
+    Invalid,
+    /// [`SendError::Unavailable`].
+    Unreachable,
+    /// [`SendError::Tls`].
+    Tls,
+    /// [`SendError::Insecure`].
+    Insecure,
+    /// [`SendError::Timeout`].
+    Timeout,
 }
 
 impl SendError {
@@ -274,8 +317,16 @@ impl SendError {
         match self {
             Self::Refused { permanent, .. } => !permanent,
             Self::RecipientsRefused(results) => refused(results).any(|(_, r)| !r.permanent),
-            Self::Temporary(_) | Self::Throttled { .. } | Self::Unavailable(_) => true,
-            Self::Auth(_) | Self::Uncertain(_) | Self::TooLarge { .. } | Self::Invalid(_) => false,
+            Self::Temporary(_)
+            | Self::Throttled { .. }
+            | Self::Unavailable(_)
+            | Self::Tls(_)
+            | Self::Timeout(_) => true,
+            Self::Auth(_)
+            | Self::Uncertain(_)
+            | Self::TooLarge { .. }
+            | Self::Invalid(_)
+            | Self::Insecure(_) => false,
         }
     }
 
@@ -296,7 +347,7 @@ impl SendError {
 
     /// A short machine-readable reason that never holds an address or server text: `auth`,
     /// `refused`, `recipients_refused`, `temporary`, `throttled`, `uncertain`, `too_large`,
-    /// `invalid` or `unavailable`.
+    /// `invalid`, `unavailable`, `tls`, `insecure` or `timeout`.
     pub fn reason(&self) -> &'static str {
         match self {
             Self::Auth(_) => "auth",
@@ -308,6 +359,27 @@ impl SendError {
             Self::TooLarge { .. } => "too_large",
             Self::Invalid(_) => "invalid",
             Self::Unavailable(_) => "unavailable",
+            Self::Tls(_) => "tls",
+            Self::Insecure(_) => "insecure",
+            Self::Timeout(_) => "timeout",
+        }
+    }
+
+    /// The kind of this error.
+    pub fn cause(&self) -> SendCause {
+        match self {
+            Self::Auth(_) => SendCause::Auth,
+            Self::Refused { .. } => SendCause::Refused,
+            Self::RecipientsRefused(_) => SendCause::RecipientsRefused,
+            Self::Temporary(_) => SendCause::Temporary,
+            Self::Throttled { .. } => SendCause::Throttled,
+            Self::Uncertain(_) => SendCause::Uncertain,
+            Self::TooLarge { .. } => SendCause::TooLarge,
+            Self::Invalid(_) => SendCause::Invalid,
+            Self::Unavailable(_) => SendCause::Unreachable,
+            Self::Tls(_) => SendCause::Tls,
+            Self::Insecure(_) => SendCause::Insecure,
+            Self::Timeout(_) => SendCause::Timeout,
         }
     }
 }
@@ -346,6 +418,26 @@ pub trait Sender: Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn connection_failures_have_causes_and_never_claim_a_send() {
+        for (error, cause, retry) in [
+            (SendError::Tls("x".into()), SendCause::Tls, true),
+            (SendError::Timeout("x".into()), SendCause::Timeout, true),
+            (SendError::Insecure("x".into()), SendCause::Insecure, false),
+            (
+                SendError::Unavailable("x".into()),
+                SendCause::Unreachable,
+                true,
+            ),
+            (SendError::Auth("x".into()), SendCause::Auth, false),
+        ] {
+            assert_eq!(error.cause(), cause);
+            assert_eq!(error.is_retryable(), retry, "{cause:?}");
+            assert!(!error.may_have_been_sent());
+            assert!(!error.reason().is_empty());
+        }
+    }
 
     fn envelope() -> Envelope {
         Envelope::new("ada@example.com", vec!["bob@example.org".into()])

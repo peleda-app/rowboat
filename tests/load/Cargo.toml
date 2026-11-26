@@ -1,0 +1,23 @@
+[package]
+name = "rowboat-load"
+description = "Node load tests: first sync of many messages, list and search latency, many mark-reads settling"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+publish = false
+
+[package.metadata.dojo]
+kind = "test"
+
+[dependencies]
+rowboat-api.workspace = true
+rowboat-node = { workspace = true, features = ["testing"] }
+thiserror.workspace = true
+clap.workspace = true
+futures.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
+
+[lints]
+workspace = true

@@ -4,6 +4,10 @@ All notable changes to Skein are recorded here. Every crate and the `rowboat` im
 
 ## [Unreleased]
 
+### Added
+
+- `skein_mail_imap::probe` and `skein_send_smtp::probe`: check a server before sign-in (TLS verified, greeting and capabilities read, no credential sent), bounded in time and bytes; the `imap_probe` fuzz target.
+
 ### Removed
 
 - The web portal (`apps/portal`), the `portal` feature of the `skein` binary with its `rust-embed` assets, the portal stage of the Docker image and the `rowboat:*-headless` image variant.
@@ -16,7 +20,13 @@ All notable changes to Skein are recorded here. Every crate and the `rowboat` im
 
 ### Changed
 
+- `MailError` gains typed causes: `Insecure`, `Quota`, `Refused`, `Tls` and `Timeout` beside `Network`, with `cause()` (a text-free `MailCause`), `connection_lost()` and `is_transient()`. `SendError` gains `Tls`, `Insecure` and `Timeout` with `cause()` (`SendCause`). Every provider reports them (IMAP and SMTP fully; the HTTP providers report timeouts), the engine treats `Timeout` like `Network` for writes, and `SyncOutcome` gains `tls`, `insecure`, `timeout`, `quota` and `refused`.
 - `skein-server` is the node's only inbound HTTP: `GET /v1/health` and the Gmail Pub/Sub and Microsoft Graph push receivers, with a new shared rate limit (`push_rate_per_second`, 429 with `Retry-After`). `router(signal, push, &config)` replaces `router` and `router_with_push`; `hash_token` replaces `hash_key`.
 - `skein-view` is a library (`skein/crates/view`): a `Follower` reads a tenant's journals straight from the storage contracts, verifying every segment through the hash chain and refusing rolled-back heads and swapped history, into the same SQLite database with its query API.
 - The `skein` binary is managed through subcommands that write through the same stores: `tenant`, `account`, `journal` (blobs, commands, events) and `webhook`; `push-token` makes the Gmail push secret. `[server.webhooks]` moved to `[webhooks]`; OAuth clients no longer need `redirect_url`.
 - Command checks moved to `skein_engine::{check_command, submit_command, cancel_command}`; account record and secret checks and tenant purging to `skein_accounts::admin`.
+
+### Fixed
+
+- The `skein` subcommands work beside a running `skein serve` on the same `fs` storage (`FsObjects::open_shared`, compare-and-swap across processes through stripe lock files), and the running node executes a command they submit.
+- `TokenManager` uses a cached access token only while the stored grant keeps the version it came from, so `skein account grant` and `account remove` from another process reach a running server at once.

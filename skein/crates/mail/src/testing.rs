@@ -254,6 +254,7 @@ fn role(name: &str) -> Option<MailboxRole> {
         "Sent" => Some(MailboxRole::Sent),
         "Trash" => Some(MailboxRole::Trash),
         "Archive" => Some(MailboxRole::Archive),
+        "Junk" => Some(MailboxRole::Junk),
         _ => None,
     }
 }

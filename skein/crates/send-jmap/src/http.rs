@@ -218,7 +218,7 @@ async fn send(
         } else if stage == Stage::Handover {
             SendError::Uncertain(format!("the connection to {host} broke after sending"))
         } else if e.is_timeout() {
-            SendError::Unavailable(format!("{host} did not answer in time"))
+            SendError::Timeout(format!("{host} did not answer in time"))
         } else {
             SendError::Unavailable(format!("the connection to {host} broke"))
         }

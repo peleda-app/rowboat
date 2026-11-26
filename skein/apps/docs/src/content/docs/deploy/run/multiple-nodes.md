@@ -5,7 +5,7 @@ sidebar:
   order: 4
 ---
 
-Several nodes can share one S3 bucket. File storage allows one process per directory (see [files](/rowboat/deploy/storage/fs/)), so it suits one node. Set on every node:
+Several nodes can share one S3 bucket. File storage allows one server per directory (see [files](/rowboat/deploy/storage/fs/)), so it suits one node. Set on every node:
 
 ```toml
 [node]

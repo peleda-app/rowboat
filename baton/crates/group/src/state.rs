@@ -41,11 +41,43 @@ pub(crate) struct EpochState {
 }
 
 /// What the log says about one resource.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct ResourceState {
     creator: PublicKey,
     grants: BTreeMap<Principal, BTreeSet<Capability>>,
     pub(crate) epochs: Vec<EpochState>,
+}
+
+impl Clone for ResourceState {
+    fn clone(&self) -> Self {
+        #[cfg(test)]
+        work::add(1);
+        Self {
+            creator: self.creator,
+            grants: self.grants.clone(),
+            epochs: self.epochs.clone(),
+        }
+    }
+}
+
+/// Units of work verification performs, counted per thread in tests: one per entry applied, per
+/// signature checked, per entry encoded or hashed, per entry copied and per resource state copied,
+/// so redoing any of these for earlier entries on every apply shows up as quadratic.
+#[cfg(test)]
+pub(crate) mod work {
+    use std::cell::Cell;
+
+    thread_local! {
+        static UNITS: Cell<u64> = const { Cell::new(0) };
+    }
+
+    pub(crate) fn add(n: u64) {
+        UNITS.with(|u| u.set(u.get() + n));
+    }
+
+    pub(crate) fn take() -> u64 {
+        UNITS.with(|u| u.replace(0))
+    }
 }
 
 impl ResourceState {
@@ -430,6 +462,8 @@ impl GroupState {
     /// Checks `entry` against this state and, only if every check passes, applies it. Nothing
     /// changes when it fails.
     pub(crate) fn apply(&mut self, entry: &Entry) -> Result<(), GroupError> {
+        #[cfg(test)]
+        work::add(1);
         let at = entry.at();
         if at < self.last_at {
             return Err(GroupError::Invalid("entry times never go back"));

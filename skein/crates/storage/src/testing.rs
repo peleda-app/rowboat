@@ -1175,8 +1175,98 @@ pub async fn all_over_objects(objects: Arc<dyn Objects>) {
     log(storage.log.clone()).await;
     snapshots(storage.log.clone()).await;
     purge(storage.clone()).await;
+    purge_one_account(objects.clone()).await;
     object_log_orphans(objects.clone()).await;
     head_attestor(Arc::new(NoAttestor)).await;
     head_attestor(Arc::new(KeyedAttestor([7; 32]))).await;
     integrity::object_log_integrity(objects).await;
+}
+
+/// [`crate::purge_account`] removes one account's journal, commands and control records and
+/// nothing of another account, the tenant's other records or the keyring's keys.
+pub async fn purge_one_account(objects: Arc<dyn Objects>) {
+    let t = tenant("conf-purge-one");
+    let gone = account("gone");
+    let kept = account("kept");
+    let storage = Storage::over(objects.clone());
+    for a in [&gone, &kept] {
+        storage
+            .log
+            .append(
+                &t,
+                a,
+                FencingToken(1),
+                vec![sample_event(a, 1), sample_event(a, 2)],
+            )
+            .await
+            .unwrap();
+        let command = Command {
+            id: CommandId::generate(),
+            account: a.clone(),
+            created_at: Timestamp(1),
+            trace: None,
+            body: CommandBody::CreateMailbox { path: "x".into() },
+        };
+        storage.commands.submit(&t, &command).await.unwrap();
+        for path in [
+            format!("accounts/{a}"),
+            format!("status/{a}"),
+            format!("credentials/{a}/password"),
+            format!("cursors/{a}/abc"),
+        ] {
+            storage
+                .control
+                .put(&t, &path, Bytes::from_static(b"x"), Expect::Any)
+                .await
+                .unwrap();
+        }
+    }
+    storage
+        .control
+        .put(&t, "keys/k1", Bytes::from_static(b"k"), Expect::Any)
+        .await
+        .unwrap();
+    let removed = crate::purge_account(&*objects, &t, &gone).await.unwrap();
+    assert!(removed >= 7, "removed {removed}");
+    let fresh = Storage::over(objects.clone());
+    assert_eq!(fresh.log.head(&t, &gone).await.unwrap(), Seq(0));
+    assert!(
+        storage
+            .commands
+            .pending(&t, &gone, 10)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        storage
+            .control
+            .get(&t, &format!("accounts/{gone}"))
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        storage
+            .control
+            .get(&t, &format!("credentials/{gone}/password"))
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(storage.log.head(&t, &kept).await.unwrap(), Seq(2));
+    assert_eq!(
+        storage.commands.pending(&t, &kept, 10).await.unwrap().len(),
+        1
+    );
+    assert!(
+        storage
+            .control
+            .get(&t, &format!("cursors/{kept}/abc"))
+            .await
+            .unwrap()
+            .is_some()
+    );
+    assert!(storage.control.get(&t, "keys/k1").await.unwrap().is_some());
+    assert_eq!(crate::purge_account(&*objects, &t, &gone).await.unwrap(), 0);
 }

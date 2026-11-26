@@ -7,10 +7,11 @@ The mail provider contract: per mailbox, an opaque `Cursor` and the `MailChange`
 | `MailSession::changes` | without a cursor: everything as `Added`, paged with `more`; with the previous cursor: exactly what changed since, never repeating earlier changes, never losing later ones; an unaccepted or unreadable cursor gives `Reset` and a full listing |
 | `fetch` | exact bytes, vanished messages left out |
 | reading | never changes the server |
-| `apply` | `Applied`, `Conflict`, `Failed { reason }` or `Uncertain`; a command beyond the provider's capabilities is `Failed { reason: "unsupported" }`. Errors: `Network` means the outcome is unknown; `Auth`, `Config`, `Throttled` and `MailboxNotFound` mean nothing changed, so the engine runs the command again later instead of reporting it uncertain; `Protocol` may follow a partial change |
+| `apply` | `Applied`, `Conflict`, `Failed { reason }` or `Uncertain`; a command beyond the provider's capabilities is `Failed { reason: "unsupported" }`. Errors: `Network` and `Timeout` (`connection_lost()`) mean the outcome is unknown; `Auth`, `Config`, `Insecure`, `Tls`, `Quota`, `Throttled` and `MailboxNotFound` mean nothing changed, so the engine runs the command again later instead of reporting it uncertain; `Refused` and `Protocol` may follow a partial change |
 | `capabilities` | `MailCapabilities`: settable system flags, keywords, labels, trash, copy, `received_at` on append, mailbox management; the default (`basic_capabilities`) is `\Answered`, `\Draft`, `\Flagged` and `\Seen` only |
 | `MailWatch::next` | wakes when something may have changed; dropping the watch closes it |
-| `MailError` | `Auth`, `Config`, `Throttled { retry_after }`, `MailboxNotFound`, `Protocol`, `Network` |
+| `MailError` | `Auth`, `Config`, `Insecure` (credentials would travel unencrypted: plain text to a remote host, no STARTTLS), `Throttled { retry_after }`, `MailboxNotFound`, `Quota` (the account's storage is full), `Refused` (the server refused a command it understood), `Protocol` (an answer the provider cannot understand), `Tls` (handshake or certificate), `Timeout`, `Network` (unreachable or broken). The texts may name hosts and are for the `skein` binary's operators only; callers decide by variant or by `cause()` |
+| `MailCause` | the variant as a closed, serializable kind without text (`unreachable` for `Network`); `connection_lost()` is true for `Network` and `Timeout`, `is_transient()` for those and `Throttled` |
 
 ## For implementations
 

@@ -34,10 +34,15 @@ on:
       - "baton/crates/**"
       - "baton/apps/**"
       - "baton/fuzz/**"
+      - "fuzz/**"
+      - "crates/api/**"
+      - "crates/node/src/records.rs"
+      - "crates/discover-autoconfig/**"
+      - "crates/discover-net/**"
+      - "crates/discover-srv/**"
       - ".github/workflows/fuzz.yml"
 
-permissions:
-  contents: read
+permissions: {}
 
 concurrency:
   group: fuzz-${{ github.ref }}
@@ -46,26 +51,39 @@ concurrency:
 jobs:
   fuzz:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     timeout-minutes: 120
     strategy:
       fail-fast: false
       matrix:
-        layer: [baton, skein]
+        layer: [baton, skein, "."]
     defaults:
       run:
-        working-directory: ${{ matrix.layer }}
+        working-directory: rowboat/${{ matrix.layer }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          path: rowboat
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: peleda-app/rinse
+          path: rinse
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: peleda-app/bento
+          path: bento
           persist-credentials: false
       - name: Install the pinned nightly
         run: rustup toolchain install "$(sed -n 's/^channel *= *"\(.*\)"$/\1/p' fuzz/rust-toolchain.toml)" --profile minimal
-      - uses: taiki-e/install-action@v2
+      - uses: taiki-e/install-action@25f51f6b1bf4e18876107cece836f4f77ac17c8c # v2.90.7
         with:
           tool: cargo-fuzz
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
-          workspaces: ${{ matrix.layer }}/fuzz -> target
+          workspaces: rowboat/${{ matrix.layer }}/fuzz -> target
       - name: fuzz-build
         run: bash fuzz/run.sh build
       - name: Fuzz every target
@@ -73,8 +91,8 @@ jobs:
           SECONDS_PER_TARGET: ${{ github.event_name == 'pull_request' && '30' || inputs.seconds || '300' }}
         run: bash fuzz/run.sh all "$SECONDS_PER_TARGET"
       - if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: fuzz-crashes-${{ matrix.layer }}
-          path: ${{ matrix.layer }}/fuzz/artifacts
+          name: fuzz-crashes-${{ matrix.layer == '.' && 'node' || matrix.layer }}
+          path: rowboat/${{ matrix.layer }}/fuzz/artifacts
           if-no-files-found: ignore

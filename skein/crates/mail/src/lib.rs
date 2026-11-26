@@ -169,15 +169,20 @@ impl fmt::Debug for Subscription {
     }
 }
 
-/// Errors of the mail contract.
+/// Errors of the mail contract. The texts may name hosts and are for operators' logs of the
+/// `skein` binary only; callers decide by variant or by [`MailError::cause`], never by text.
 #[derive(Debug, thiserror::Error)]
 pub enum MailError {
     /// The server refused the credentials.
     #[error("authentication failed")]
     Auth,
-    /// The account settings cannot work (bad host, plain text to a remote host, missing token).
+    /// The account settings cannot work (bad host, missing token, an unusable extra root).
     #[error("bad configuration: {0}")]
     Config(String),
+    /// The settings or the server would need credentials sent without encryption: plain text to
+    /// a remote host, or a server that does not offer STARTTLS. Nothing was sent.
+    #[error("insecure connection refused: {0}")]
+    Insecure(String),
     /// The server is limiting requests; try again after the delay, if it gave one.
     #[error("throttled")]
     Throttled {
@@ -187,12 +192,88 @@ pub enum MailError {
     /// The mailbox does not exist.
     #[error("mailbox not found")]
     MailboxNotFound,
+    /// The account's storage quota is full; nothing changed.
+    #[error("quota exceeded")]
+    Quota,
+    /// The server refused a command it understood (an IMAP `NO`, an HTTP `403`).
+    #[error("refused by the server: {0}")]
+    Refused(String),
     /// The server said something the provider cannot understand.
     #[error("protocol error: {0}")]
     Protocol(String),
-    /// The connection failed or timed out; retrying may help.
+    /// The TLS handshake or the certificate check failed, or the server answered in plain text
+    /// where TLS was expected (or in TLS where plain text was). Nothing was sent.
+    #[error("TLS failed: {0}")]
+    Tls(String),
+    /// The server did not answer within the deadline. Like [`MailError::Network`], the outcome of
+    /// a write is unknown.
+    #[error("timed out: {0}")]
+    Timeout(String),
+    /// The server could not be reached or the connection broke; retrying may help.
     #[error("network error: {0}")]
     Network(String),
+}
+
+/// The kind of a [`MailError`], without text: what callers match on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MailCause {
+    /// [`MailError::Auth`].
+    Auth,
+    /// [`MailError::Config`].
+    Config,
+    /// [`MailError::Insecure`].
+    Insecure,
+    /// [`MailError::Throttled`].
+    Throttled,
+    /// [`MailError::MailboxNotFound`].
+    MailboxNotFound,
+    /// [`MailError::Quota`].
+    Quota,
+    /// [`MailError::Refused`].
+    Refused,
+    /// [`MailError::Protocol`].
+    Protocol,
+    /// [`MailError::Tls`].
+    Tls,
+    /// [`MailError::Timeout`].
+    Timeout,
+    /// [`MailError::Network`]: unreachable or broken.
+    Unreachable,
+}
+
+impl MailError {
+    /// The kind of this error.
+    pub fn cause(&self) -> MailCause {
+        match self {
+            Self::Auth => MailCause::Auth,
+            Self::Config(_) => MailCause::Config,
+            Self::Insecure(_) => MailCause::Insecure,
+            Self::Throttled { .. } => MailCause::Throttled,
+            Self::MailboxNotFound => MailCause::MailboxNotFound,
+            Self::Quota => MailCause::Quota,
+            Self::Refused(_) => MailCause::Refused,
+            Self::Protocol(_) => MailCause::Protocol,
+            Self::Tls(_) => MailCause::Tls,
+            Self::Timeout(_) => MailCause::Timeout,
+            Self::Network(_) => MailCause::Unreachable,
+        }
+    }
+
+    /// Whether the connection may have broken mid-exchange, so the outcome of a write is unknown
+    /// and the session must not be reused: [`MailError::Network`] and [`MailError::Timeout`].
+    pub fn connection_lost(&self) -> bool {
+        matches!(self, Self::Network(_) | Self::Timeout(_))
+    }
+
+    /// Whether the failure says nothing changed and the same call may work later without a
+    /// change by a person: throttling, timeouts and broken connections.
+    pub fn is_transient(&self) -> bool {
+        matches!(
+            self,
+            Self::Throttled { .. } | Self::Timeout(_) | Self::Network(_)
+        )
+    }
 }
 
 /// A mail account at a provider.
@@ -309,4 +390,75 @@ pub trait MailWatch: Send {
     /// Returns once something may have changed since the watch started or the last return. A
     /// change while the watch is alive is never swallowed; returns without a change are allowed.
     async fn next(&mut self) -> Result<Changed, MailError>;
+}
+
+#[cfg(test)]
+mod error_tests {
+    use super::*;
+
+    #[test]
+    fn every_error_has_a_cause_and_transience_follows_it() {
+        let all = [
+            (MailError::Auth, MailCause::Auth, false, false),
+            (
+                MailError::Config("x".into()),
+                MailCause::Config,
+                false,
+                false,
+            ),
+            (
+                MailError::Insecure("x".into()),
+                MailCause::Insecure,
+                false,
+                false,
+            ),
+            (
+                MailError::Throttled { retry_after: None },
+                MailCause::Throttled,
+                false,
+                true,
+            ),
+            (
+                MailError::MailboxNotFound,
+                MailCause::MailboxNotFound,
+                false,
+                false,
+            ),
+            (MailError::Quota, MailCause::Quota, false, false),
+            (
+                MailError::Refused("x".into()),
+                MailCause::Refused,
+                false,
+                false,
+            ),
+            (
+                MailError::Protocol("x".into()),
+                MailCause::Protocol,
+                false,
+                false,
+            ),
+            (MailError::Tls("x".into()), MailCause::Tls, false, false),
+            (
+                MailError::Timeout("x".into()),
+                MailCause::Timeout,
+                true,
+                true,
+            ),
+            (
+                MailError::Network("x".into()),
+                MailCause::Unreachable,
+                true,
+                true,
+            ),
+        ];
+        for (error, cause, lost, transient) in all {
+            assert_eq!(error.cause(), cause);
+            assert_eq!(error.connection_lost(), lost, "{cause:?}");
+            assert_eq!(error.is_transient(), transient, "{cause:?}");
+        }
+        assert_eq!(
+            serde_json::to_string(&MailCause::Unreachable).unwrap(),
+            "\"unreachable\""
+        );
+    }
 }

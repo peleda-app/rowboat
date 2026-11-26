@@ -411,3 +411,138 @@ fn memory_storage_has_nothing_to_manage() {
             .contains("memory")
     );
 }
+
+struct Serving(std::process::Child);
+
+impl Drop for Serving {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+fn wait_until(what: &str, mut done: impl FnMut() -> bool) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while !done() {
+        assert!(std::time::Instant::now() < deadline, "timed out: {what}");
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+}
+
+#[test]
+fn the_subcommands_manage_a_running_server() {
+    let n = Node::new();
+    let config = n.file(
+        "serve.toml",
+        &format!(
+            "[node]\nid = \"served\"\n[storage]\nkind = \"fs\"\npath = \"{}\"\n[keyring]\nmaster_key_file = \"{}\"\n[server]\nenabled = false\n[engine]\nheartbeat_secs = 1\ninterval_secs = 5\n[telemetry]\nfilter = \"warn,skein=info,skein_engine=info\"\n",
+            n.data().join("data").display(),
+            n.data().join("master.key").display(),
+        ),
+    );
+    let log_path = n.data().join("serve.log");
+    let serve = |log: &Path| {
+        Command::new(env!("CARGO_BIN_EXE_skein"))
+            .args(["serve", "--config", &config])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(std::fs::File::create(log).unwrap())
+            .spawn()
+            .unwrap()
+    };
+    let mut first = Serving(serve(&log_path));
+    let log = || std::fs::read_to_string(&log_path).unwrap_or_default();
+    wait_until("the server starts", || log().contains("node started"));
+
+    let cli = |args: &[&str], stdin: &str| n.ok(&[args, &["--config", &config]].concat(), stdin);
+    cli(&["tenant", "add", "acme"], "");
+    let record = n.file(
+        "box.json",
+        r#"{"provider": "imap", "settings": {"host": "127.0.0.1", "port": 1, "security": "plain", "username": "ada@example.com"}, "auth": {"type": "password"}, "include": ["INBOX"]}"#,
+    );
+    cli(
+        &[
+            "account", "put", "--tenant", "acme", "box", "--file", &record,
+        ],
+        "",
+    );
+    cli(
+        &["account", "password", "--tenant", "acme", "box"],
+        "correct-horse-EXAMPLE\n",
+    );
+    let message = n.file(
+        "message.eml",
+        "From: ada@example.com\r\nTo: sam@example.org\r\nSubject: Hi\r\n\r\nHello.\r\n",
+    );
+    let hash = cli(
+        &[
+            "journal", "put-blob", "--tenant", "acme", "--file", &message,
+        ],
+        "",
+    )
+    .trim()
+    .to_owned();
+    let command = n.file(
+        "append.json",
+        &format!(
+            r#"{{"body": {{"type": "append", "mailbox": "INBOX", "blob": "{hash}", "flags": []}}}}"#
+        ),
+    );
+    let submitted: Value = serde_json::from_str(&cli(
+        &[
+            "journal", "submit", "--tenant", "acme", "box", "--file", &command,
+        ],
+        "",
+    ))
+    .unwrap();
+    assert_eq!(submitted["duplicate"], false);
+    cli(
+        &[
+            "journal", "events", "--tenant", "acme", "box", "--from", "1", "--limit", "10",
+        ],
+        "",
+    );
+    let copy = n.data().join("copy.eml");
+    cli(
+        &[
+            "journal",
+            "get-blob",
+            "--tenant",
+            "acme",
+            &hash,
+            "--out",
+            copy.to_str().unwrap(),
+        ],
+        "",
+    );
+    assert_eq!(
+        std::fs::read(&copy).unwrap(),
+        std::fs::read(&message).unwrap()
+    );
+    let shown: Value =
+        serde_json::from_str(&cli(&["account", "show", "--tenant", "acme", "box"], "")).unwrap();
+    assert_eq!(shown["record"]["account"], "box");
+
+    wait_until("the running node picks up the account", || {
+        log().contains("account run failed")
+    });
+    assert!(
+        first.0.try_wait().unwrap().is_none(),
+        "the server keeps running"
+    );
+
+    let second_log = n.data().join("second.log");
+    let mut second = Serving(serve(&second_log));
+    let mut status = None;
+    wait_until("the second server exits", || {
+        status = second.0.try_wait().unwrap();
+        status.is_some()
+    });
+    assert!(!status.unwrap().success(), "a second server is refused");
+    assert!(
+        std::fs::read_to_string(&second_log)
+            .unwrap()
+            .contains("in use by another process")
+    );
+    assert!(!log().contains("correct-horse-EXAMPLE"));
+}

@@ -109,11 +109,11 @@ fn refusal(status: StatusCode, headers: &HeaderMap, body: &[u8]) -> Refusal {
 }
 
 pub(crate) fn network(error: &reqwest::Error) -> MailError {
-    MailError::Network(if error.is_timeout() {
-        "the Gmail API did not answer in time".into()
+    if error.is_timeout() {
+        MailError::Timeout("the Gmail API did not answer in time".into())
     } else {
-        "the Gmail API could not be reached".into()
-    })
+        MailError::Network("the Gmail API could not be reached".into())
+    }
 }
 
 pub(crate) async fn read(

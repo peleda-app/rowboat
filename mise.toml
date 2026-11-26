@@ -3,14 +3,16 @@ rust = "1.99"
 bun = "1.4.4"
 
 [tasks.check]
-description = "Everything CI runs on every push: both layers in one workspace, both fuzz workspaces, dojo"
+description = "Everything CI runs on every push: all three layers in one workspace, the three fuzz workspaces, dojo"
 run = [
   "bash scripts/check-unsafe.sh",
   "cargo fmt --all --check",
   "cargo fmt --check --manifest-path baton/fuzz/Cargo.toml",
   "cargo fmt --check --manifest-path skein/fuzz/Cargo.toml",
+  "cargo fmt --check --manifest-path fuzz/Cargo.toml",
   "cargo check --manifest-path baton/fuzz/Cargo.toml --bins",
   "cargo check --manifest-path skein/fuzz/Cargo.toml --bins",
+  "cargo check --manifest-path fuzz/Cargo.toml --bins",
   "cargo clippy --workspace --all-targets -- -D warnings",
   "cargo test --workspace",
   "cargo clippy -p skein-telemetry --all-targets --features otel -- -D warnings",
@@ -34,20 +36,28 @@ run = "cargo run --release -p baton-load --"
 description = "Skein load tests: `mise run load-skein -- --scenario many|failover|slow|history ...`"
 run = "cargo run --release -p skein-load --"
 
+[tasks.load-node]
+description = "Node load tests: `mise run load-node -- --messages 100000 --mailboxes 10`"
+run = "cargo run --release -p rowboat-load --"
+
 [tasks.load]
-description = "Both load suites with their default scenarios"
+description = "Every load suite with its default scenario"
 run = [
   "cargo run --release -p baton-load --",
   "cargo run --release -p skein-load --",
+  "cargo run --release -p rowboat-load --",
 ]
 
 [tasks.it]
-description = "Integration tests against servers in skein/tests/integration/compose.yaml"
-run = "bash skein/tests/integration/it.sh"
+description = "Skein's and the node's integration suites against the containers of skein/tests/integration/compose.yaml with tests/integration/compose.yaml over it, then the stack down (ROWBOAT_IT_KEEP=1 keeps it up)"
+run = "bash tests/integration/it.sh"
 
 [tasks.it-down]
-description = "Stop the integration stack and remove its volumes"
-run = "docker compose -f skein/tests/integration/compose.yaml down -v"
+description = "Stop the integration stack, remove its volumes and the test CA"
+run = [
+  "docker compose -f skein/tests/integration/compose.yaml -f tests/integration/compose.yaml down -v --remove-orphans",
+  "rm -rf tests/integration/.certs",
+]
 
 [tasks.live]
 description = "Tests against real provider accounts; needs SKEIN_LIVE_* variables"
@@ -61,11 +71,15 @@ run = "bash baton/fuzz/run.sh"
 description = "Fuzz Skein: `mise run fuzz-skein -- all 60`, `<target> [secs]`, `build`, `list`, `replay <target> <file>`"
 run = "bash skein/fuzz/run.sh"
 
+[tasks.fuzz-node]
+description = "Fuzz the node layer: `mise run fuzz-node -- all 60`, `<target> [secs]`, `build`, `list`, `replay <target> <file>`"
+run = "bash fuzz/run.sh"
+
 [tasks.fuzz-all]
-description = "Fuzz every target of both layers: `mise run fuzz-all -- [secs per target]`, 60 by default"
+description = "Fuzz every target of every layer: `mise run fuzz-all -- [secs per target]`, 60 by default"
 usage = 'arg "[secs]" default="60" help="Seconds per target"'
-run = ['bash baton/fuzz/run.sh all "$usage_secs"', 'bash skein/fuzz/run.sh all "$usage_secs"']
+run = ['bash baton/fuzz/run.sh all "$usage_secs"', 'bash skein/fuzz/run.sh all "$usage_secs"', 'bash fuzz/run.sh all "$usage_secs"']
 
 [tasks.fuzz-build]
-description = "Build every fuzz target of both layers on the pinned nightly"
-run = ["bash baton/fuzz/run.sh build", "bash skein/fuzz/run.sh build"]
+description = "Build every fuzz target of every layer on the pinned nightly"
+run = ["bash baton/fuzz/run.sh build", "bash skein/fuzz/run.sh build", "bash fuzz/run.sh build"]

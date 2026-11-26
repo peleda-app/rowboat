@@ -1,17 +1,18 @@
 # syntax=docker/dockerfile:1
 # The skein binary: a node, plus the inbound listener for provider push and the health check. Build
-# from the rowboat root:
-#   docker build -t rowboat -f skein/Dockerfile .
+# from the folder holding rowboat with its siblings rinse and bento (the workspace's path
+# dependencies); skein/Dockerfile.dockerignore keeps the rest of that folder out of the context:
+#   docker build -t rowboat -f rowboat/skein/Dockerfile .
 #   docker run -p 8080:8080 -v skein-data:/data -v ./skein.toml:/etc/skein/skein.toml:ro rowboat
 ARG RUST_VERSION=1.99
 
 FROM rust:${RUST_VERSION}-trixie AS build
-WORKDIR /src
-COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
-COPY baton baton
-COPY skein skein
+WORKDIR /src/rowboat
+COPY rinse /src/rinse
+COPY bento /src/bento
+COPY rowboat /src/rowboat
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/src/target \
+    --mount=type=cache,target=/src/rowboat/target \
     cargo build --release --locked -p skein \
  && cp target/release/skein /usr/local/bin/skein
 

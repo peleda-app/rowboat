@@ -50,7 +50,8 @@ Export, import and copy run while no node writes the tenant; the target keeps wo
 ## Image
 
 ```bash
-docker build -t rowboat -f skein/Dockerfile .
+# from the folder holding rowboat, rinse and bento side by side
+docker build -t rowboat -f rowboat/skein/Dockerfile .
 docker run -v /srv/skein/skein.toml:/etc/skein/skein.toml:ro -v skein-data:/data \
   -e SKEIN_S3_ACCESS_KEY_ID -e SKEIN_S3_SECRET_ACCESS_KEY -p 8080:8080 rowboat
 docker exec -i <container> skein tenant add acme

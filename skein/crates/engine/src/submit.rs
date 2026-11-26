@@ -282,7 +282,7 @@ pub async fn submit_command(
         let _ = signal
             .publish(
                 &skein_core::coordination::group(tenant),
-                &format!("commands/{}", command.account),
+                &crate::wake_topic(&command.account),
                 Bytes::from(command.id.to_string()),
             )
             .await;

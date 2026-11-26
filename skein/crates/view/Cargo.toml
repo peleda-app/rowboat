@@ -21,6 +21,7 @@ skein-storage.workspace = true
 skein-itip.workspace = true
 baton-signal.workspace = true
 blake3.workspace = true
+async-trait.workspace = true
 bytes.workspace = true
 futures.workspace = true
 mail-parser.workspace = true
@@ -33,7 +34,6 @@ tracing.workspace = true
 
 [dev-dependencies]
 baton-signal-local.workspace = true
-async-trait.workspace = true
 skein-storage-memory.workspace = true
 proptest.workspace = true
 tempfile.workspace = true

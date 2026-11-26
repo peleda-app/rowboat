@@ -375,6 +375,54 @@ async fn a_crash_while_mailing_is_reported_and_never_repeated() {
 }
 
 #[tokio::test]
+async fn without_message_inspection_mail_is_stored_but_never_parsed() {
+    let (engine, storage) = build(Some(FakeSender::new()));
+    let engine = engine.without_message_inspection();
+    let fake = FakeMail::new();
+    fake.create_mailbox("INBOX").await;
+    let message = include_bytes!("../../itip/tests/fixtures/invitation.eml");
+    fake.add("INBOX", message, Flags::default()).await;
+    engine.sync_account(&config(), &fake).await.unwrap();
+    let all = events(&storage).await;
+    let whole = all
+        .iter()
+        .find_map(|e| match &e.body {
+            EventBody::MessageAdded { blob, .. } => Some(*blob),
+            _ => None,
+        })
+        .expect("message_added");
+    assert!(
+        !all.iter()
+            .any(|e| matches!(e.body, EventBody::ItipReceived { .. }))
+    );
+    let calendar = skein_itip::imip::find(message).unwrap().calendar;
+    assert!(
+        storage
+            .blobs
+            .get(&tenant(), &skein_core::BlobHash::of(&calendar))
+            .await
+            .unwrap()
+            .is_none()
+    );
+
+    let id = submit(
+        &storage,
+        CommandBody::RespondInvitation {
+            invitation: whole,
+            answer: PartStat::Accepted,
+            attendee: Some("mailto:ada@example.com".into()),
+            comment: None,
+            save_to_sent: None,
+        },
+    )
+    .await;
+    engine.run_commands(&config(), &fake).await.unwrap();
+    let all = events(&storage).await;
+    assert!(all.iter().any(|e| matches!(&e.body,
+        EventBody::WriteFailed { command, reason } if command == &id && reason == "unsupported")));
+}
+
+#[tokio::test]
 async fn answering_an_invitation_from_mail_sends_one_reply_with_threading() {
     let sender = FakeSender::new();
     let (engine, storage) = build(Some(sender.clone()));

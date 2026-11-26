@@ -1,0 +1,104 @@
+[package]
+name = "rowboat-node"
+description = "Peleda's node builder: Skein's engine, the mail database, Baton's leases and the hooks behind rowboat-api"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+readme = "docs/README.md"
+
+[package.metadata.dojo]
+kind = "library"
+
+[features]
+testing = [
+  "dep:rowboat-keystore-memory",
+  "dep:rinse-mail-direct",
+  "dep:tempfile",
+  "skein-mail/testing",
+  "skein-send/testing",
+]
+
+[dependencies]
+rowboat-api.workspace = true
+rowboat-keystore.workspace = true
+rowboat-discover.workspace = true
+rowboat-discover-table.workspace = true
+rowboat-discover-autoconfig.workspace = true
+rowboat-discover-srv.workspace = true
+rowboat-discover-net.workspace = true
+rowboat-spam.workspace = true
+rowboat-spam-signals.workspace = true
+rowboat-category.workspace = true
+rowboat-category-bento.workspace = true
+bento.workspace = true
+bento-notify.workspace = true
+bento-category.workspace = true
+bento-insight-view.workspace = true
+bento-trust.workspace = true
+rowboat-compose.workspace = true
+rinse-mail.workspace = true
+skein-core.workspace = true
+skein-storage.workspace = true
+skein-storage-fs.workspace = true
+skein-storage-sealed.workspace = true
+skein-keyring.workspace = true
+skein-keyring-local.workspace = true
+skein-accounts.workspace = true
+skein-engine.workspace = true
+skein-mail.workspace = true
+skein-mail-imap.workspace = true
+skein-send.workspace = true
+skein-send-smtp.workspace = true
+skein-view.workspace = true
+skein-oauth.workspace = true
+baton-core.workspace = true
+baton-identity.workspace = true
+baton-lease.workspace = true
+baton-lease-cas.workspace = true
+baton-signal.workspace = true
+baton-signal-local.workspace = true
+baton-state.workspace = true
+async-trait.workspace = true
+blake3.workspace = true
+bytes.workspace = true
+data-encoding.workspace = true
+futures.workspace = true
+getrandom.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["sync", "time", "rt", "macros"] }
+tracing.workspace = true
+zeroize.workspace = true
+rowboat-keystore-memory = { workspace = true, optional = true }
+rinse-mail-direct = { workspace = true, optional = true }
+tempfile = { workspace = true, optional = true }
+
+[dev-dependencies]
+rowboat-api = { workspace = true, features = ["testing"] }
+rowboat-discover = { workspace = true, features = ["testing"] }
+skein-core = { workspace = true, features = ["testing"] }
+rowboat-keystore-memory.workspace = true
+rinse-mail = { workspace = true, features = ["testing"] }
+rinse-mail-direct.workspace = true
+skein-itip.workspace = true
+skein-mail = { workspace = true, features = ["testing"] }
+skein-send = { workspace = true, features = ["testing"] }
+proptest.workspace = true
+tempfile.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "test-util", "net", "io-util"] }
+tracing-subscriber.workspace = true
+
+[[test]]
+name = "e2e"
+required-features = ["testing"]
+
+[[test]]
+name = "secrets"
+required-features = ["testing"]
+
+[lints]
+workspace = true

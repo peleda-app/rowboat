@@ -1,6 +1,9 @@
 [workspace]
 resolver = "3"
 members = [
+  "crates/*",
+  "tests/integration",
+  "tests/load",
   "baton/apps/*",
   "baton/crates/*",
   "baton/tests/load",
@@ -9,7 +12,7 @@ members = [
   "skein/tests/integration",
   "skein/tests/load",
 ]
-exclude = ["baton/fuzz", "skein/apps/docs", "skein/fuzz"]
+exclude = ["fuzz", "baton/fuzz", "skein/apps/docs", "skein/fuzz"]
 
 [workspace.package]
 version = "0.0.0"
@@ -60,6 +63,7 @@ skein-storage = { path = "skein/crates/storage", version = "0.0.0" }
 skein-storage-memory = { path = "skein/crates/storage-memory", version = "0.0.0" }
 skein-storage-fs = { path = "skein/crates/storage-fs", version = "0.0.0" }
 skein-storage-s3 = { path = "skein/crates/storage-s3", version = "0.0.0" }
+skein-storage-sealed = { path = "skein/crates/storage-sealed", version = "0.0.0" }
 skein-keyring = { path = "skein/crates/keyring", version = "0.0.0" }
 skein-keyring-local = { path = "skein/crates/keyring-local", version = "0.0.0" }
 skein-mail = { path = "skein/crates/mail", version = "0.0.0" }
@@ -91,6 +95,29 @@ skein-pim-google = { path = "skein/crates/pim-google", version = "0.0.0" }
 skein-pim-graph = { path = "skein/crates/pim-graph", version = "0.0.0" }
 skein-pim-jmap = { path = "skein/crates/pim-jmap", version = "0.0.0" }
 skein-throttle = { path = "skein/crates/throttle", version = "0.0.0" }
+
+rowboat-api = { path = "crates/api" }
+rowboat-keystore = { path = "crates/keystore" }
+rowboat-keystore-memory = { path = "crates/keystore-memory" }
+rowboat-discover = { path = "crates/discover" }
+rowboat-discover-table = { path = "crates/discover-table" }
+rowboat-discover-autoconfig = { path = "crates/discover-autoconfig" }
+rowboat-discover-srv = { path = "crates/discover-srv" }
+rowboat-discover-net = { path = "crates/discover-net" }
+rowboat-spam = { path = "crates/spam" }
+rowboat-spam-signals = { path = "crates/spam-signals" }
+rowboat-category = { path = "crates/category" }
+rowboat-category-bento = { path = "crates/category-bento" }
+rowboat-compose = { path = "crates/compose" }
+rowboat-node = { path = "crates/node" }
+
+rinse-mail = { path = "../rinse/crates/mail" }
+rinse-mail-direct = { path = "../rinse/crates/mail-direct" }
+bento = { path = "../bento/crates/bento" }
+bento-notify = { path = "../bento/crates/notify" }
+bento-category = { path = "../bento/crates/category" }
+bento-insight-view = { path = "../bento/crates/insight-view" }
+bento-trust = { path = "../bento/crates/trust" }
 
 anyhow = "1"
 argon2 = { version = "0.6", default-features = false, features = ["alloc"] }

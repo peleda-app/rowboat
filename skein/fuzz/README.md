@@ -20,6 +20,7 @@ through their own source files (`#[path]`), so they need no library target.
 | `mail_jmap` | JMAP sessions, method responses read as `Mailbox/get`, `Email/get`, `Email/query`, `Email/changes`; cursors |
 | `pim_jmap` | JMAP sessions, responses read as `AddressBook/get`, `Calendar/get`, `ContactCard/get`, `CalendarEvent/get`, `/changes`; canonical object bytes are stable; JSCalendar answer patches; objects to write; cursors |
 | `mail_imap` | mailbox names (modified UTF-7, both ways), Gmail labels (both ways), flags, UID sets, cursors |
+| `imap_probe` | everything an IMAP server sends to the pre-sign-in probe (`skein-mail-imap`): greeting, untagged lines and the tagged answer to `CAPABILITY`; capabilities stay within their count and length caps, and the probe never panics |
 | `mail_gmail` | `messages.list`, `history.list`, `labels.list`, message metadata, raw messages (base64url), error bodies, cursors |
 | `mail_graph` | delta pages, error bodies, RFC 3339 dates (both ways), cursors |
 | `pim_google` | calendar lists, events pages, events, an event being answered, connections pages, batch gets, people, error bodies, cursors |
@@ -32,8 +33,8 @@ through their own source files (`#[path]`), so they need no library target.
 | `sse` | Server-Sent Events streams (`skein-sse`) fed whole and cut into up to 15 chunks at fuzzer-chosen points: the same events or the same `TooLarge` either way; no event data over the limit |
 | `push_notify` | Microsoft Graph notification posts, Gmail Pub/Sub envelopes and Graph validation tokens (`skein-push`, what the push receivers read from the internet): at most `MAX_GRAPH_ITEMS` notifications with plausible ids, Gmail addresses trimmed and bounded, echoed tokens printable and bounded |
 | `oauth_redirect` | pasted redirect addresses (`skein_oauth::read_redirect`): whatever is accepted has a non-empty, trimmed code and state |
-| `smtp_replies` | everything an SMTP server sends (`skein-send-smtp`): multi-line replies until the bytes end or one is malformed, each also read as an EHLO answer; codes stay three digits, replies stay within the line cap |
-| `view_parse` | `skein-view` message parsing (caps on text, HTML and snippet, clean message ids) and JWZ thread assignment of up to four messages split at `NUL` |
+| `smtp_replies` | everything an SMTP server sends (`skein-send-smtp`): multi-line replies until the bytes end or one is malformed, each also read as an EHLO answer (which is also what the pre-sign-in SMTP probe reads); codes stay three digits, replies stay within the line cap |
+| `view_parse` | `skein-view` message parsing (caps on text, HTML and snippet, clean message ids), the tag rules a parser hook's tags pass through and JWZ thread assignment of up to four messages split at `NUL` |
 
 Seeds are hand-written files in [`corpus/<target>/`](corpus) (and copies of the small fixtures
 in `crates/itip/tests/fixtures` and `crates/view/tests/fixtures`). Runs write what they find to

@@ -6,6 +6,7 @@
 //! lives here.
 
 mod follower;
+mod observe;
 mod parse;
 mod pim;
 mod search;
@@ -15,13 +16,22 @@ mod threads;
 #[cfg(test)]
 mod e2e;
 
-pub use follower::{DEFAULT_MAX_BLOB, DEFAULT_PAGE, FollowError, Follower, Timing};
-pub use parse::{Addr, Attachment, HTML_CAP, SNIPPET_CHARS, TEXT_CAP};
+pub use follower::{
+    DEFAULT_MAX_BLOB, DEFAULT_PAGE, FollowError, Follower, REPARSE_PER_ROUND, Timing,
+};
+pub use observe::{
+    Added, CommandOutcome, MAX_ADDED, MAX_OUTCOMES, MAX_TOUCHED, OutcomeKind, PageReport, Touched,
+    ViewObserver,
+};
+pub use parse::{
+    Addr, Attachment, HTML_CAP, MAX_TAGS, MailParser, MessageParser, ParseContext, ParseError,
+    Parsed, SNIPPET_CHARS, TEXT_CAP, clean_tags, parse, valid_tag,
+};
 pub use pim::{Format, LIST_CAP, OBJECT_CAP, ObjectFields, TEXT_CHARS};
 pub use search::{MAX_TERMS, fts_query};
 pub use store::{
-    AccountRow, CollectionRow, Envelope, MAX_LIMIT, MailboxRow, Membership, MessageDetail,
-    ObjectDetail, ObjectInCollection, ObjectSummary, Placement, Range, Store, StoreError,
-    ThreadMessage, ThreadRow,
+    AccountRow, AddressRow, CollectionRow, Envelope, Filter, MAX_LIMIT, MAX_SUGGESTIONS,
+    MailboxRow, Membership, MessageDetail, ObjectDetail, ObjectInCollection, ObjectSummary,
+    Placement, Range, StaleMessage, Store, StoreError, ThreadMessage, ThreadRow,
 };
 pub use threads::{Link, Node, subject_key, tree};

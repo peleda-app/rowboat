@@ -21,6 +21,7 @@ testing = []
 [dependencies]
 skein-core.workspace = true
 async-trait.workspace = true
+serde.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]

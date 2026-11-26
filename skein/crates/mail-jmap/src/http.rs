@@ -95,9 +95,10 @@ fn retry_after(headers: &HeaderMap) -> Option<Duration> {
 }
 
 fn network(host: &str, error: &reqwest::Error) -> MailError {
-    MailError::Network(if error.is_timeout() {
-        format!("{host} did not answer in time")
-    } else if error.is_redirect() {
+    if error.is_timeout() {
+        return MailError::Timeout(format!("{host} did not answer in time"));
+    }
+    MailError::Network(if error.is_redirect() {
         format!("{host} redirected too often or away from https")
     } else {
         format!("{host} could not be reached")
@@ -293,7 +294,7 @@ impl Http {
                 Ok(v) => Posted::Answer(v),
                 Err(_) => Posted::Lost,
             }),
-            Err(MailError::Network(_)) => Ok(Posted::Lost),
+            Err(e) if e.connection_lost() => Ok(Posted::Lost),
             Err(e) => Err(e),
         }
     }

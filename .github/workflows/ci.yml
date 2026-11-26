@@ -5,65 +5,126 @@ on:
     branches: [main]
   pull_request:
 
-permissions:
-  contents: read
+permissions: {}
 
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+defaults:
+  run:
+    working-directory: rowboat
+
 jobs:
   check:
     name: mise run check
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     env:
       MISE_TRUSTED_CONFIG_PATHS: ${{ github.workspace }}
-    defaults:
-      run:
-        working-directory: rowboat
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           path: rowboat
           persist-credentials: false
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: peleda-app/dojo
           path: dojo
           persist-credentials: false
-      - uses: jdx/mise-action@v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: peleda-app/rinse
+          path: rinse
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: peleda-app/bento
+          path: bento
+          persist-credentials: false
+      - uses: jdx/mise-action@924e7c586e33d7d4bae9c14e26c5d22e2beb6e78 # v5.3.0
         with:
           working_directory: rowboat
       - run: rustup component add rustfmt clippy
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: |
             rowboat -> target
             rowboat/baton/fuzz -> target
             rowboat/skein/fuzz -> target
+            rowboat/fuzz -> target
             dojo -> target
       - run: mise run check
 
   integration:
+    name: Skein's and the node's container suites
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 30
+    env:
+      MISE_TRUSTED_CONFIG_PATHS: ${{ github.workspace }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          path: rowboat
           persist-credentials: false
-      - uses: jdx/mise-action@v2
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: peleda-app/rinse
+          path: rinse
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: peleda-app/bento
+          path: bento
+          persist-credentials: false
+      - uses: jdx/mise-action@924e7c586e33d7d4bae9c14e26c5d22e2beb6e78 # v5.3.0
+        with:
+          working_directory: rowboat
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: rowboat -> target
+      - name: Resolve the test certificate's host name to loopback
+        run: echo '127.0.0.1 mail.localhost' | sudo tee -a /etc/hosts
       - run: mise run it
+      - if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: integration-container-logs
+          path: rowboat/tests/integration/.logs/compose.log
+          if-no-files-found: ignore
       - if: always()
         run: mise run it-down
 
   load:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      MISE_TRUSTED_CONFIG_PATHS: ${{ github.workspace }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          path: rowboat
           persist-credentials: false
-      - uses: jdx/mise-action@v2
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: peleda-app/rinse
+          path: rinse
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: peleda-app/bento
+          path: bento
+          persist-credentials: false
+      - uses: jdx/mise-action@924e7c586e33d7d4bae9c14e26c5d22e2beb6e78 # v5.3.0
+        with:
+          working_directory: rowboat
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: rowboat -> target
       - name: Load scenario (10 people, 2000 messages each, 20 rounds of new mail)
         run: |
           cargo run --release -q -p skein-load -- --accounts 10 --history 2000 --per-round 15 --rounds 20 --flag-changes 5 --size 20000 | tee load.txt
@@ -71,15 +132,28 @@ jobs:
 
   image:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          path: rowboat
           persist-credentials: false
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/build-push-action@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: peleda-app/rinse
+          path: rinse
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: peleda-app/bento
+          path: bento
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
-          file: skein/Dockerfile
+          file: rowboat/skein/Dockerfile
           push: false
           tags: rowboat:ci
           cache-from: type=gha
@@ -87,10 +161,31 @@ jobs:
 
   dependencies:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      MISE_TRUSTED_CONFIG_PATHS: ${{ github.workspace }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          path: rowboat
           persist-credentials: false
-      - uses: EmbarkStudios/cargo-deny-action@v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          command: check advisories bans licenses sources
+          repository: peleda-app/rinse
+          path: rinse
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: peleda-app/bento
+          path: bento
+          persist-credentials: false
+      - uses: jdx/mise-action@924e7c586e33d7d4bae9c14e26c5d22e2beb6e78 # v5.3.0
+        with:
+          working_directory: rowboat
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: rowboat -> target
+          key: deny
+      - run: cargo install --locked cargo-deny
+      - run: cargo deny check advisories bans licenses sources

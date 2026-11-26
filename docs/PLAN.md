@@ -90,11 +90,11 @@ Contracts, crates, errors, tests and docs follow [RULES.md](RULES.md). The app l
 
 ## Phases
 
-0. **Foundation.** (Stage 4 of the reorganization formed the repository; the node layer starts here.) Workspace, CI, the contracts above with memory implementations and conformance suites; `push` moved from `../app`.
-1. **Node on one device.** `rowboat-node` with Skein's engine, local storage, the content worker, Pellet, bento and insight; the app's desktop shell switches to it.
-2. **Group and handover.** Pairing, journal replication, commands, peer fetch, priority leases and cooperative handover between desktop and phone; the phone talking to the desktop over iroh.
+0. **Foundation.** (Stage 4 of the reorganization formed the repository; the node layer starts here.) Workspace, CI, the contracts above with memory implementations and conformance suites; `push` moved from `../app`. The contracts phase 1 needs (`rowboat-api`, `rowboat-keystore`, `rowboat-discover`, `rowboat-spam`, `rowboat-category`) are specified in [NODE.md](NODE.md) and built with their memory or table implementations and conformance suites (2026-11-26); moving `push` from `../app` is still open.
+1. **Node on one device.** `rowboat-node` with Skein's engine, local storage, the content worker, Pellet, bento and insight; the app's desktop shell switches to it. Implementation spec: [NODE.md](NODE.md) (IMAP and SMTP accounts by password or app password, spam and categories minimal; the app side is `../app/docs/DESKTOP.md`). Built 2026-11-26 except discovery probes, lazy re-parsing, the integration and live suites; the app's switch to it is next.
+2. **Group and handover.** Pairing, journal replication, commands, peer fetch, priority leases and cooperative handover between desktop and phone; the phone talking to the desktop over iroh; the `activity` signal (ids only, short time-to-live, sealed to the group) that lets the app continue reading or writing on another device (`../app/docs/PLAN.md`, "Continue on another device"), and drafts saved through the owner node every few seconds while typing; losing a device (`../app/docs/PLAN.md`, "Lost or stolen device"): revocation with key rotation, a signed `wipe` command class checked against the roster, OAuth refresh-token revocation for every account the revoked device owned, the revocation seen by the device on any contact with the group, and periodic membership confirmation with a self-lock after a configurable silence.
 3. **Server.** `apps/rowboat` multi-tenant, sealed credentials and blobs, S3 optional, refetch for expired blobs.
-4. **Push.** The senders, the gateway, deduplication across handovers, the person's rules.
+4. **Push.** The senders, the gateway, deduplication across handovers, the person's rules, and the sealed wipe push as the fastest (never the only) way a revoked device learns of its revocation.
 5. **Aliases.** The four services, alias recognition on incoming mail, replies from aliases, rules per alias.
 6. **Calendars and contacts** through Skein's PIM providers on the same leases.
 7. **Original view and Rinse** routing.

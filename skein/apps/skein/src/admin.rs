@@ -230,7 +230,7 @@ where
         .enable_all()
         .build()?;
     rt.block_on(async {
-        let objects = crate::objects(&config.storage)?;
+        let objects = crate::objects(&config.storage, crate::Access::Shared)?;
         let storage = Storage::over(objects.clone());
         let keyring: Arc<dyn Keyring> = Arc::new(
             LocalKeyring::open_or_create(&config.keyring.master_key_file, storage.control.clone())

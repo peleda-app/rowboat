@@ -81,7 +81,13 @@ impl Extensions {
                 "SMTPUTF8" => ext.smtputf8 = true,
                 "STARTTLS" => ext.starttls = true,
                 "DSN" => ext.dsn = true,
-                "AUTH" => ext.auth = words.map(str::to_ascii_uppercase).collect(),
+                "AUTH" => {
+                    ext.auth = words
+                        .filter(|w| w.len() <= 64 && w.bytes().all(|b| b.is_ascii_graphic()))
+                        .take(32)
+                        .map(str::to_ascii_uppercase)
+                        .collect()
+                }
                 _ => {}
             }
         }
@@ -100,17 +106,16 @@ impl<'a> Session<'a> {
         config: &'a Config,
         tls: Arc<ClientConfig>,
     ) -> Result<Self, SendError> {
-        let unavailable = SendError::Unavailable;
         let tcp = within(
             config.timeout,
             TcpStream::connect((config.host.as_str(), config.port)),
         )
         .await
         .map_err(|e| {
-            unavailable(format!(
-                "connecting to {}:{}: {e}",
-                config.host, config.port
-            ))
+            opening(
+                &e,
+                format!("connecting to {}:{}: {e}", config.host, config.port),
+            )
         })?;
         let io: Box<dyn Io> = match config.security {
             Security::Tls => Box::new(handshake(config, tls.clone(), tcp).await?),
@@ -121,9 +126,12 @@ impl<'a> Session<'a> {
             io: BufReader::new(io),
             ext: Extensions::default(),
         };
-        let greeting = session.reply(config.timeout).await.map_err(unavailable)?;
+        let greeting = session
+            .reply(config.timeout)
+            .await
+            .map_err(|e| opening(&e, format!("reading the greeting: {e}")))?;
         if !greeting.ok() {
-            return Err(unavailable(format!(
+            return Err(SendError::Unavailable(format!(
                 "the server greeted with {}",
                 greeting.describe()
             )));
@@ -134,6 +142,17 @@ impl<'a> Session<'a> {
         }
         session.authenticate().await?;
         Ok(session)
+    }
+
+    pub(crate) fn probe(&self) -> crate::SmtpProbe {
+        let auth: Vec<String> = self.ext.auth.iter().take(32).cloned().collect();
+        let offers = |m: &str| auth.iter().any(|a| a == m);
+        crate::SmtpProbe {
+            password_sign_in: offers("PLAIN") || offers("LOGIN"),
+            oauth: offers("XOAUTH2") || offers("OAUTHBEARER"),
+            max_size: self.ext.size.filter(|n| *n > 0),
+            auth,
+        }
     }
 
     pub(crate) fn limits(&self) -> Limits {
@@ -245,7 +264,7 @@ impl<'a> Session<'a> {
         let stuffed = dot_stuff(message);
         within(self.config.data_timeout, self.io.write_all(&stuffed))
             .await
-            .map_err(|e| SendError::Temporary(format!("sending the message: {e}")))?;
+            .map_err(|e| exchange(&e, format!("sending the message: {e}")))?;
         within(self.config.timeout, async {
             self.io.write_all(b".\r\n").await?;
             self.io.flush().await
@@ -297,19 +316,19 @@ impl<'a> Session<'a> {
 
     async fn starttls(&mut self, tls: Arc<ClientConfig>) -> Result<(), SendError> {
         if !self.ext.starttls {
-            return Err(SendError::Unavailable(
+            return Err(SendError::Insecure(
                 "the server does not offer STARTTLS".into(),
             ));
         }
         let reply = self.open_command("STARTTLS").await?;
         if reply.code != 220 {
-            return Err(SendError::Unavailable(format!(
+            return Err(SendError::Insecure(format!(
                 "the server refused STARTTLS: {}",
                 reply.describe()
             )));
         }
         if !self.io.buffer().is_empty() {
-            return Err(SendError::Unavailable(
+            return Err(SendError::Tls(
                 "the server sent data before the TLS handshake".into(),
             ));
         }
@@ -386,30 +405,31 @@ impl<'a> Session<'a> {
     async fn open_command(&mut self, line: &str) -> Result<Reply, SendError> {
         self.write_line(line)
             .await
-            .map_err(SendError::Unavailable)?;
+            .map_err(|e| opening(&e, format!("sending a command: {e}")))?;
         self.reply(self.config.timeout)
             .await
-            .map_err(SendError::Unavailable)
+            .map_err(|e| opening(&e, format!("reading a reply: {e}")))
     }
 
     async fn command(&mut self, line: &str) -> Result<Reply, SendError> {
-        self.write_line(line).await.map_err(SendError::Temporary)?;
+        self.write_line(line)
+            .await
+            .map_err(|e| exchange(&e, format!("sending a command: {e}")))?;
         self.reply(self.config.timeout)
             .await
-            .map_err(SendError::Temporary)
+            .map_err(|e| exchange(&e, format!("reading a reply: {e}")))
     }
 
-    async fn write_line(&mut self, line: &str) -> Result<(), String> {
+    async fn write_line(&mut self, line: &str) -> std::io::Result<()> {
         within(self.config.timeout, async {
             self.io.write_all(line.as_bytes()).await?;
             self.io.write_all(b"\r\n").await?;
             self.io.flush().await
         })
         .await
-        .map_err(|e| format!("sending a command: {e}"))
     }
 
-    async fn reply(&mut self, limit: Duration) -> Result<Reply, String> {
+    async fn reply(&mut self, limit: Duration) -> std::io::Result<Reply> {
         within(limit, async {
             let mut code = None;
             let mut lines = Vec::new();
@@ -447,7 +467,6 @@ impl<'a> Session<'a> {
             }
         })
         .await
-        .map_err(|e| e.to_string())
     }
 }
 
@@ -487,6 +506,28 @@ pub(crate) fn fuzz_replies(bytes: &[u8]) {
     });
 }
 
+fn timed_out(e: &std::io::Error) -> bool {
+    e.kind() == std::io::ErrorKind::TimedOut
+}
+
+/// A failure before a session was open: nothing can have been sent.
+fn opening(e: &std::io::Error, text: String) -> SendError {
+    if timed_out(e) {
+        SendError::Timeout(text)
+    } else {
+        SendError::Unavailable(text)
+    }
+}
+
+/// A failure before the whole message was sent: the service cannot have taken it.
+fn exchange(e: &std::io::Error, text: String) -> SendError {
+    if timed_out(e) {
+        SendError::Timeout(text)
+    } else {
+        SendError::Temporary(text)
+    }
+}
+
 async fn within<T>(
     limit: Duration,
     work: impl Future<Output = std::io::Result<T>>,
@@ -512,7 +553,13 @@ async fn handshake<S: AsyncRead + AsyncWrite + Unpin + Send>(
         TlsConnector::from(tls).connect(name, stream),
     )
     .await
-    .map_err(|e| SendError::Unavailable(format!("TLS with {host}: {e}")))
+    .map_err(|e| {
+        if timed_out(&e) {
+            SendError::Timeout(format!("TLS with {host}: {e}"))
+        } else {
+            SendError::Tls(format!("TLS with {host}: {e}"))
+        }
+    })
 }
 
 fn notify(when: &[DsnNotify]) -> String {

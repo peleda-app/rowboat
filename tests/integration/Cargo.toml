@@ -1,0 +1,41 @@
+[package]
+name = "rowboat-integration"
+description = "The node against IMAP and SMTP servers in local containers, over TLS with a test CA"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+publish = false
+
+[package.metadata.dojo]
+kind = "test"
+
+[[bin]]
+name = "rowboat-it-certs"
+path = "src/bin/certs.rs"
+
+[dependencies]
+rowboat-api.workspace = true
+rowboat-node = { workspace = true, features = ["testing"] }
+rowboat-keystore-memory.workspace = true
+rowboat-discover = { workspace = true, features = ["testing"] }
+rowboat-discover-autoconfig.workspace = true
+rinse-mail.workspace = true
+rinse-mail-direct.workspace = true
+skein-core = { workspace = true, features = ["testing"] }
+async-imap.workspace = true
+blake3.workspace = true
+bytes.workspace = true
+futures.workspace = true
+rcgen.workspace = true
+reqwest = { workspace = true, features = ["json"] }
+rustls.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "net", "io-util"] }
+tokio-rustls.workspace = true
+ulid.workspace = true
+
+[lints]
+workspace = true

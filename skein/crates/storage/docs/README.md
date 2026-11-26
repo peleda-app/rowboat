@@ -77,6 +77,8 @@ Enable the `testing` feature and call `testing::all_over_objects(store)` for an 
 
 `Snapshot` is the state of an account at a log position: mailboxes by id, calendars and address books by id (`collections`, each with its objects, blob and version), each with its messages (item, blob, size, flags, labels, received time). `Snapshot::apply` folds the next event in; events out of order are ignored, so applying a page twice is harmless, and a `resync_required` clears that mailbox until its messages are listed again. `ObjectLog` stores snapshots as zstd JSON at `tenants/{t}/snapshots/{account}/{seq}`.
 
-## Purging a tenant
+## Purging a tenant or an account
 
 Every typed store has `purge(tenant)`, and `Storage::purge_tenant` calls all four. Everything of the tenant goes (logs, heads, snapshots, blobs, queued commands, control records) except control records under `keys/`, where the keyring keeps the tombstone of a destroyed key (and, for `keyring-local`, the account keys wrapped under it) so the tenant id cannot get a fresh key.
+
+`purge_account(objects, tenant, account)` removes one account from storage laid out by `Storage::over`: its head, log segments, snapshots and queued commands, and the control records Skein keeps per account (`accounts/`, `status/`, `state/`, `pim-state/`, `push/`, `oauth/` records and the `cursors/`, `started/`, `sending/`, `credentials/`, `pim-cursors/` subtrees). Blobs are shared by content address and stay; `keys/` and other accounts are never touched. It is idempotent and part of `testing::all_over_objects`. A log handle that read the account before keeps its watermark and refuses the purged head as a rollback; read it again through a new handle.

@@ -1,5 +1,8 @@
-use mail_parser::{MessageParser, PartKind};
+use async_trait::async_trait;
+use bytes::Bytes;
+use mail_parser::PartKind;
 use serde::{Deserialize, Serialize};
+use skein_core::MailboxRole;
 
 /// Most bytes of text body kept per message; longer text is cut at a character boundary.
 pub const TEXT_CAP: usize = 1024 * 1024;
@@ -47,13 +50,17 @@ pub struct Parsed {
     pub references: Vec<String>,
     /// The decoded subject.
     pub subject: Option<String>,
+    /// `From` addresses.
     pub from: Vec<Addr>,
+    /// `To` addresses.
     pub to: Vec<Addr>,
+    /// `Cc` addresses.
     pub cc: Vec<Addr>,
     /// The `Date` header in milliseconds since the epoch, UTC.
     pub date: Option<i64>,
     /// RFC 8621 `hasAttachment`: an attachment not marked inline.
     pub has_attachments: bool,
+    /// The attachments, in part order.
     pub attachments: Vec<Attachment>,
     /// Plain text, or text made from HTML when there is no plain part; at most [`TEXT_CAP`].
     pub text: Option<String>,
@@ -63,6 +70,88 @@ pub struct Parsed {
     pub snippet: Option<String>,
     /// What the message's iMIP calendar part says (RFC 6047), when it carries one.
     pub itip: Option<skein_core::ItipSummary>,
+    /// Labels a parser hook attached, such as a spam verdict or a category; the store keeps at
+    /// most [`MAX_TAGS`] that pass [`valid_tag`] and drops the rest.
+    pub tags: Vec<String>,
+}
+
+/// Most tags kept per message.
+pub const MAX_TAGS: usize = 8;
+
+/// Whether `tag` may be stored: 1 to 64 characters of `[a-z0-9._-]`.
+pub fn valid_tag(tag: &str) -> bool {
+    !tag.is_empty()
+        && tag.len() <= 64
+        && tag.bytes().all(|b| {
+            b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'.' | b'_' | b'-')
+        })
+}
+
+/// The tags of `tags` the store keeps: valid ones, without repeats, sorted, at most [`MAX_TAGS`].
+pub fn clean_tags(tags: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = tags.iter().filter(|t| valid_tag(t)).cloned().collect();
+    out.sort();
+    out.dedup();
+    out.truncate(MAX_TAGS);
+    out
+}
+
+/// Where a message was first seen, for parser hooks whose output depends on placement.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ParseContext {
+    /// The account.
+    pub account: String,
+    /// The mailbox the message was added to, when it came from a `message_added` event.
+    pub mailbox: Option<String>,
+    /// That mailbox's role, when the journal named one before or in the same page.
+    pub role: Option<MailboxRole>,
+}
+
+/// Why a parser hook refused a message. Carries no content.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum ParseError {
+    /// The bytes were refused, or the parser's output failed its checks; the message is stored
+    /// as unavailable.
+    #[error("the message was refused")]
+    Refused,
+    /// The parser could not run now; the follower stops the page and retries it next round.
+    #[error("the parser is unavailable")]
+    Unavailable,
+}
+
+/// Turns a message's original bytes into what the view stores. The follower calls it once per
+/// new blob per account, at most one call at a time per follower, never for bytes larger than
+/// its blob limit.
+///
+/// Implementations must not panic on any input; a hostile message gives fewer fields or
+/// [`ParseError::Refused`].
+#[async_trait]
+pub trait MessageParser: Send + Sync {
+    /// Parses `raw`; the result is stored with `available` forced to true.
+    async fn parse(&self, raw: &Bytes, context: &ParseContext) -> Result<Parsed, ParseError>;
+
+    /// The parser's version; stored with each message parsed by it.
+    fn version(&self) -> String;
+}
+
+/// The built-in parser over `mail-parser`, used when no hook is given.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct MailParser;
+
+#[async_trait]
+impl MessageParser for MailParser {
+    async fn parse(&self, raw: &Bytes, _: &ParseContext) -> Result<Parsed, ParseError> {
+        let parsed = parse(raw);
+        if parsed.available {
+            Ok(parsed)
+        } else {
+            Err(ParseError::Refused)
+        }
+    }
+
+    fn version(&self) -> String {
+        "mail-parser-1".into()
+    }
 }
 
 impl Parsed {
@@ -75,7 +164,7 @@ impl Parsed {
 /// Parses RFC 5322 bytes. Never fails: unreadable input gives [`Parsed::unavailable`], and
 /// damaged structure keeps whatever parsed.
 pub fn parse(bytes: &[u8]) -> Parsed {
-    let Some(message) = MessageParser::new().parse(bytes) else {
+    let Some(message) = mail_parser::MessageParser::new().parse(bytes) else {
         return Parsed::unavailable();
     };
     let addrs = |list: Option<mail_parser::AddressList<'_>>| -> Vec<Addr> {
@@ -156,6 +245,7 @@ pub fn parse(bytes: &[u8]) -> Parsed {
         html: (!html.is_empty() && html.len() <= HTML_CAP).then_some(html),
         snippet,
         itip: skein_itip::imip::find(bytes).and_then(|i| skein_itip::summary(&i.calendar).ok()),
+        tags: Vec::new(),
     }
 }
 
@@ -275,6 +365,38 @@ pub(crate) mod tests {
         let p = parse(html.as_bytes());
         assert_eq!(p.html, None);
         assert!(p.text.is_some());
+    }
+
+    #[test]
+    fn tags_are_checked_sorted_and_capped() {
+        assert!(valid_tag("spam.junk"));
+        assert!(valid_tag("category.person-direct_1"));
+        for bad in ["", "Spam", "a b", "a/b", "x\n", &"a".repeat(65), "é"] {
+            assert!(!valid_tag(bad), "{bad:?}");
+        }
+        let many: Vec<String> = (0..20).rev().map(|i| format!("t{i:02}")).collect();
+        let mut with_bad = many.clone();
+        with_bad.push("BAD".into());
+        with_bad.push("t01".into());
+        let kept = clean_tags(&with_bad);
+        assert_eq!(kept.len(), MAX_TAGS);
+        assert_eq!(kept[0], "t00");
+        assert!(kept.windows(2).all(|w| w[0] < w[1]));
+    }
+
+    #[tokio::test]
+    async fn the_default_parser_refuses_what_it_cannot_read() {
+        let ok = MailParser
+            .parse(&Bytes::from(fixture("plain.eml")), &ParseContext::default())
+            .await
+            .unwrap();
+        assert!(ok.available);
+        assert_eq!(
+            MailParser
+                .parse(&Bytes::from_static(b""), &ParseContext::default())
+                .await,
+            Err(ParseError::Refused)
+        );
     }
 
     #[test]

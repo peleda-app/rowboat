@@ -50,6 +50,12 @@ pub use submit::{
 };
 pub use sync::{MailboxReport, SyncReport};
 
+/// The signal topic, in the tenant's group (`skein_core::coordination::group`), that wakes the
+/// account's worker: it runs pending commands, then a sync. Hints carry no delivery guarantee.
+pub fn wake_topic(account: &AccountId) -> String {
+    format!("commands/{account}")
+}
+
 /// Which account to sync and how.
 #[derive(Debug, Clone)]
 pub struct AccountConfig {
@@ -119,6 +125,7 @@ pub struct Engine {
     pub(crate) holding: Arc<lease::Holding>,
     pub(crate) senders: Option<Arc<dyn SenderDirectory>>,
     pub(crate) send_policy: SendPolicy,
+    pub(crate) inspect_messages: bool,
 }
 
 impl Engine {
@@ -142,7 +149,22 @@ impl Engine {
             holding: Arc::new(lease::Holding::default()),
             senders: None,
             send_policy: SendPolicy::default(),
+            inspect_messages: true,
         }
+    }
+
+    /// Never parses message bytes: no iMIP detection during sync (no `itip_received`, no
+    /// calendar part stored) and `respond_invitation` fails with `unsupported`. For nodes that
+    /// keep untrusted bytes out of their own process and read messages through a separate parser.
+    pub fn without_message_inspection(mut self) -> Self {
+        self.inspect_messages = false;
+        self
+    }
+
+    /// Whether the engine parses message bytes itself (see
+    /// [`Engine::without_message_inspection`]).
+    pub fn inspects_messages(&self) -> bool {
+        self.inspect_messages
     }
 
     /// The node this engine runs as.

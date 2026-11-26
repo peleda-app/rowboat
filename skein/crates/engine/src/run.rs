@@ -110,12 +110,22 @@ type Key = (TenantId, AccountId);
 struct Worker {
     stop: watch::Sender<bool>,
     handle: JoinHandle<()>,
+    mailboxes: Mailboxes,
+    stopping: bool,
+}
+
+type Mailboxes = (Option<Vec<String>>, Vec<String>);
+
+fn mailboxes(config: &AccountConfig) -> Mailboxes {
+    (config.include.clone(), config.exclude.clone())
 }
 
 /// Runs the node until `shutdown` completes: heartbeats with the engine's profile, picks the
 /// accounts it should own with [`baton_lease::preferred`] over live nodes (the strongest class
 /// first, then weighted rendezvous hashing), and keeps one worker per owned account that syncs on
-/// push, on command hints and on the interval, with backoff on errors.
+/// push, on command hints and on the interval, with backoff on errors. A worker whose account's
+/// `include` or `exclude` changed in the directory is stopped and started again with the new
+/// lists on a later tick, never running beside its successor.
 ///
 /// The engine stops acting on its leases once its heartbeats have not succeeded for the liveness
 /// time-to-live less a fifth; workers then end and start again after the next successful
@@ -201,12 +211,25 @@ pub async fn run(
             }
         }
         for (key, entry) in wanted {
-            if workers.contains_key(&key) {
+            let mailboxes = mailboxes(&entry.config);
+            if let Some(w) = workers.get_mut(&key) {
+                if !w.stopping && w.mailboxes != mailboxes {
+                    let _ = w.stop.send(true);
+                    w.stopping = true;
+                }
                 continue;
             }
             let (stop, stopped) = watch::channel(false);
             let handle = tokio::spawn(worker(engine.clone(), entry, config.clone(), stopped));
-            workers.insert(key, Worker { stop, handle });
+            workers.insert(
+                key,
+                Worker {
+                    stop,
+                    handle,
+                    mailboxes,
+                    stopping: false,
+                },
+            );
         }
     }
     info!(workers = workers.len(), "node stopping");
@@ -229,7 +252,7 @@ async fn worker(
     let group = coordination::group(&entry.config.tenant);
     let command_hints = engine
         .signal
-        .subscribe(&group, &format!("commands/{account}"))
+        .subscribe(&group, &crate::wake_topic(&account))
         .await
         .ok();
     let push_hints = engine

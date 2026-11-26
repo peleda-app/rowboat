@@ -115,11 +115,11 @@ fn host(url: &Url) -> String {
 }
 
 fn network(host: &str, error: &reqwest::Error) -> MailError {
-    MailError::Network(if error.is_timeout() {
-        format!("{host} did not answer in time")
+    if error.is_timeout() {
+        MailError::Timeout(format!("{host} did not answer in time"))
     } else {
-        format!("{host} could not be reached")
-    })
+        MailError::Network(format!("{host} could not be reached"))
+    }
 }
 
 fn client(timeout: Duration, roots: &TlsRoots) -> Result<reqwest::Client, MailError> {

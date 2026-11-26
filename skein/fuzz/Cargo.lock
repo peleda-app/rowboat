@@ -1652,6 +1652,7 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "arbitrary",
+ "async-trait",
  "base64",
  "baton-core",
  "baton-state",
@@ -1680,6 +1681,7 @@ dependencies = [
  "skein-storage",
  "skein-storage-memory",
  "tempfile",
+ "thiserror 2.0.21",
  "tokio",
  "zstd",
 ]
@@ -1936,6 +1938,7 @@ name = "skein-send"
 version = "0.0.0"
 dependencies = [
  "async-trait",
+ "serde",
  "skein-core",
  "thiserror 2.0.21",
 ]

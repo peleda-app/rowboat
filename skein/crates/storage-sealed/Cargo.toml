@@ -1,0 +1,33 @@
+[package]
+name = "skein-storage-sealed"
+description = "Skein object storage that seals every value with XChaCha20-Poly1305 over any other object store"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "docs/README.md"
+keywords = ["storage", "encryption", "skein"]
+categories = ["database", "cryptography"]
+
+[package.metadata.dojo]
+kind = "implementation"
+implements = "skein-storage"
+
+[dependencies]
+skein-storage.workspace = true
+async-trait.workspace = true
+bytes.workspace = true
+chacha20poly1305.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+skein-storage = { workspace = true, features = ["testing"] }
+skein-storage-memory.workspace = true
+proptest.workspace = true
+tokio.workspace = true
+
+[lints]
+workspace = true

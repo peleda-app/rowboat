@@ -3,6 +3,7 @@
 use libfuzzer_sys::fuzz_target;
 use rusqlite::Connection;
 
+#[allow(dead_code)]
 #[path = "../../crates/view/src/parse.rs"]
 mod parse;
 #[path = "../../crates/view/src/threads.rs"]
@@ -16,6 +17,14 @@ CREATE TABLE messages (account TEXT NOT NULL, thread_id INTEGER);
 ";
 
 fuzz_target!(|data: &[u8]| {
+    let tags: Vec<String> = String::from_utf8_lossy(data)
+        .split([' ', '\0'])
+        .map(str::to_owned)
+        .collect();
+    let kept = parse::clean_tags(&tags);
+    assert!(kept.len() <= parse::MAX_TAGS);
+    assert!(kept.iter().all(|t| parse::valid_tag(t)));
+    assert!(kept.windows(2).all(|w| w[0] < w[1]));
     let messages: Vec<parse::Parsed> = data.split(|b| *b == 0).take(4).map(parse::parse).collect();
     for p in &messages {
         if let Some(text) = &p.text {

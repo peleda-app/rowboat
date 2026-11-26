@@ -1,0 +1,36 @@
+# Layered over skein/tests/integration/compose.yaml (the first -f file, so relative paths resolve
+# from that directory): TLS with the test CA in .certs/, extra ports for the node suite.
+services:
+  greenmail:
+    entrypoint: ['/bin/sh', '/node-seed/greenmail.sh']
+    environment:
+      GREENMAIL_OPTS: '-Dgreenmail.setup.test.imap -Dgreenmail.setup.test.smtp -Dgreenmail.setup.test.imaps -Dgreenmail.setup.test.smtps -Dgreenmail.hostname=0.0.0.0 -Dgreenmail.api.hostname=0.0.0.0 -Dgreenmail.api.port=8080 -Dgreenmail.tls.keystore.file=/tmp/it.p12 -Dgreenmail.tls.keystore.password=it-keystore -Dgreenmail.users=ada:it-password@example.com -Dgreenmail.verbose=false'
+    volumes:
+      - ../../../tests/integration/.certs:/certs:ro
+      - ../../../tests/integration/seed/greenmail:/node-seed:ro
+    ports:
+      - '127.0.0.1:49193:3993'
+      - '127.0.0.1:49165:3465'
+      - '127.0.0.1:49180:8080'
+
+  dovecot:
+    volumes:
+      - ../../../tests/integration/seed/dovecot/node.conf:/etc/dovecot/conf.d/node.conf:ro
+      - ../../../tests/integration/.certs/tls.crt:/etc/dovecot/ssl/tls.crt:ro
+      - ../../../tests/integration/.certs/tls.key:/etc/dovecot/ssl/tls.key:ro
+    ports:
+      - '127.0.0.1:49293:31993'
+      - '127.0.0.1:49265:31465'
+      - '127.0.0.1:49287:31587'
+
+  stalwart-seed:
+    entrypoint: ['/bin/sh', '/node-seed/seed.sh']
+    volumes:
+      - ../../../tests/integration/seed/stalwart:/node-seed:ro
+      - ../../../tests/integration/.certs:/certs:ro
+
+  stalwart:
+    ports:
+      - '127.0.0.1:49393:993'
+      - '127.0.0.1:49365:465'
+      - '127.0.0.1:49387:587'

@@ -1,0 +1,25 @@
+[package]
+name = "rowboat-keystore-memory"
+description = "In-memory device secret store for tests and the node's test profile"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+readme = "docs/README.md"
+
+[package.metadata.dojo]
+kind = "implementation"
+implements = "rowboat-keystore"
+
+[dependencies]
+rowboat-keystore.workspace = true
+async-trait.workspace = true
+
+[dev-dependencies]
+rowboat-keystore = { workspace = true, features = ["testing"] }
+tokio.workspace = true
+
+[lints]
+workspace = true

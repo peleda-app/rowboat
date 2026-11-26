@@ -138,6 +138,29 @@ impl CasLeases {
         self
     }
 
+    /// Deletes the record of `key` when nobody holds it, waits to take it over or has it
+    /// reserved, so a resource that is never leased again leaves nothing behind. `Ok(true)` when
+    /// no record is left; `Ok(false)` when the lease is held or the record changed meanwhile, and
+    /// then nothing is deleted. Tokens granted later for the same key still rise (see
+    /// [`record::next_token`]).
+    pub async fn forget(&self, group: &GroupId, key: &LeaseKey) -> Result<bool, LeaseError> {
+        let Some((record, version)) = self.read(group, key).await? else {
+            return Ok(true);
+        };
+        if record.holder.is_some() || record.takeover.is_some() || record.reserved.is_some() {
+            return Ok(false);
+        }
+        match self
+            .state
+            .delete(group, &Self::name(key), Expect::Version(version))
+            .await
+        {
+            Ok(()) => Ok(true),
+            Err(StateError::Conflict) => Ok(false),
+            Err(e) => Err(LeaseError::backend(e)),
+        }
+    }
+
     fn name(key: &LeaseKey) -> RecordName {
         RecordName::new(format!("lease/{key}")).expect("a lease key is a valid segment")
     }

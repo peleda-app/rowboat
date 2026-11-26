@@ -1,0 +1,15 @@
+*
+!rowboat
+!rinse
+!bento
+**/target
+**/.git
+**/node_modules
+**/fuzz/corpus
+**/fuzz/artifacts
+**/fuzz/work
+rowboat/tests/integration/.certs
+**/*.local.md
+rowboat/skein/tests/integration/.state
+rowboat/skein/apps/docs/dist
+rowboat/skein/apps/docs/.astro

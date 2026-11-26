@@ -193,6 +193,54 @@ pub(crate) async fn delete_prefix(
     }
 }
 
+/// The control paths under which Skein keeps records of one account, each followed by
+/// `/{account}`: whole subtrees for the first list, single records for the second.
+const ACCOUNT_CONTROL_TREES: [&str; 5] = [
+    "cursors",
+    "started",
+    "sending",
+    "credentials",
+    "pim-cursors",
+];
+const ACCOUNT_CONTROL_RECORDS: [&str; 6] =
+    ["accounts", "status", "state", "pim-state", "push", "oauth"];
+
+/// Deletes everything one account has in the journal (head, segments, snapshots), the command
+/// queue and the tenant's control records Skein keeps per account (the record, sealed
+/// credentials, cursors, status, start markers, push and OAuth records), from storage laid out by
+/// [`Storage::over`]. Blobs are shared by content address and stay; the keyring's key records
+/// (`keys/`) and other accounts are never touched. Idempotent: purging again removes nothing and
+/// succeeds. Returns how many objects were removed.
+pub async fn purge_account(
+    objects: &dyn Objects,
+    tenant: &skein_core::TenantId,
+    account: &skein_core::AccountId,
+) -> Result<u64, StorageError> {
+    let mut removed = 0;
+    let head = ObjectKey::account(tenant, "heads", account)?;
+    if objects.get(&head).await?.is_some() {
+        objects.delete(&head, Expect::Any).await?;
+        removed += 1;
+    }
+    for area in ["log", "snapshots", "commands"] {
+        let prefix = ObjectKey::account(tenant, area, account)?;
+        removed += delete_prefix(objects, &prefix, |_| false).await?;
+    }
+    let control = ObjectKey::tenant(tenant).join("control")?;
+    for tree in ACCOUNT_CONTROL_TREES {
+        let prefix = control.join(tree)?.join(account.as_str())?;
+        removed += delete_prefix(objects, &prefix, |_| false).await?;
+    }
+    for record in ACCOUNT_CONTROL_RECORDS {
+        let key = control.join(record)?.join(account.as_str())?;
+        if objects.get(&key).await?.is_some() {
+            objects.delete(&key, Expect::Any).await?;
+            removed += 1;
+        }
+    }
+    Ok(removed)
+}
+
 impl Storage {
     /// Deletes everything the tenant has in the four stores, except the record of its keyring
     /// key (`keys/` in its control area), which must survive so a destroyed key stays destroyed.

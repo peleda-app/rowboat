@@ -341,3 +341,9 @@ proptest! {
         }
     }
 }
+
+#[test]
+fn the_wake_topic_is_the_one_workers_subscribe_to() {
+    let account = AccountId::new("box").unwrap();
+    assert_eq!(crate::wake_topic(&account), "commands/box");
+}

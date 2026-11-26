@@ -13,7 +13,8 @@ use tokio::sync::{Notify, watch};
 use tokio::task::JoinHandle;
 use tracing::{debug, info, warn};
 
-use crate::parse::{Parsed, parse};
+use crate::observe::{Added, CommandOutcome, OutcomeKind, PageReport, Touched, ViewObserver};
+use crate::parse::{MailParser, MessageParser, ParseContext, ParseError, Parsed};
 use crate::pim::parse_object;
 use crate::store::{Store, StoreError};
 
@@ -37,6 +38,9 @@ pub enum FollowError {
     /// The events after the checkpoint are gone and there is no snapshot to start from.
     #[error("the journal no longer reaches the checkpoint and has no snapshot")]
     NoSnapshot,
+    /// The parser hook could not run; the page is retried next round.
+    #[error("the parser is unavailable")]
+    Parser,
 }
 
 impl From<IntegrityError> for FollowError {
@@ -53,6 +57,9 @@ pub struct Timing {
     /// Between rounds over every account, hinted or not.
     pub safety: Duration,
 }
+
+/// Messages parsed again per round of [`Follower::run`] when the parser's version changed.
+pub const REPARSE_PER_ROUND: usize = 50;
 
 impl Default for Timing {
     fn default() -> Self {
@@ -81,7 +88,11 @@ pub struct Follower {
     max_blob: u64,
     attestor: Arc<dyn HeadAttestor>,
     signal: Option<Arc<dyn Signal>>,
+    parser: Arc<dyn MessageParser>,
+    observer: Option<Arc<dyn ViewObserver>>,
 }
+
+type Roles = BTreeMap<String, Option<skein_core::MailboxRole>>;
 
 async fn blocking<T: Send + 'static>(
     f: impl FnOnce() -> Result<T, StoreError> + Send + 'static,
@@ -124,7 +135,23 @@ impl Follower {
             max_blob: DEFAULT_MAX_BLOB,
             attestor: Arc::new(NoAttestor),
             signal: None,
+            parser: Arc::new(MailParser),
+            observer: None,
         }
+    }
+
+    /// Parses originals with `parser` instead of the built-in [`MailParser`]. Content already
+    /// stored is kept; the parser's version is stored with every message it parses.
+    pub fn with_parser(mut self, parser: Arc<dyn MessageParser>) -> Self {
+        self.parser = parser;
+        self
+    }
+
+    /// Calls `observer` after every page of events (and every rebuild from a snapshot) is
+    /// committed, in commit order, from the follower's task.
+    pub fn with_observer(mut self, observer: Arc<dyn ViewObserver>) -> Self {
+        self.observer = Some(observer);
+        self
     }
 
     /// Follows only these accounts.
@@ -202,11 +229,25 @@ impl Follower {
                 return check_settled(&head, checkpoint, tip.as_ref());
             }
             match self.segments_after(&head, checkpoint, tip.as_ref()).await {
-                Ok(refs) => return self.apply(account, refs, checkpoint).await,
+                Ok(refs) => return self.apply(account, refs, checkpoint, seq).await,
                 Err(FollowError::Storage(StorageError::Integrity(IntegrityError::Missing {
                     ..
                 }))) if !rebuilt => {
                     self.rebuild(account, checkpoint, seq).await?;
+                    if let Some(observer) = &self.observer {
+                        let store = self.store.clone();
+                        let id = account.to_string();
+                        let checkpoint = blocking(move || store.checkpoint(&id)).await?;
+                        observer.page_applied(&PageReport {
+                            account: account.to_string(),
+                            checkpoint,
+                            head: seq,
+                            rebuilt: true,
+                            mailboxes: Touched::Many,
+                            mailboxes_changed: true,
+                            ..PageReport::default()
+                        });
+                    }
                     rebuilt = true;
                 }
                 Err(e) => return Err(e),
@@ -246,6 +287,7 @@ impl Follower {
         account: &AccountId,
         refs: Vec<SegmentRef>,
         mut checkpoint: u64,
+        head: u64,
     ) -> Result<(), FollowError> {
         let log = &self.storage.log;
         for segment in refs {
@@ -269,9 +311,14 @@ impl Follower {
             };
             let last = pages.len() - 1;
             for (n, page) in pages.into_iter().enumerate() {
+                let roles = page_roles(page);
                 for e in page {
-                    self.ensure(account, e).await?;
+                    self.ensure(account, e, &roles).await?;
                 }
+                let report = self
+                    .observer
+                    .as_ref()
+                    .map(|_| report_of(account, page, head));
                 let store = self.store.clone();
                 let id = account.to_string();
                 let page = page.to_vec();
@@ -280,20 +327,46 @@ impl Follower {
                 checkpoint =
                     blocking(move || store.apply_page_to(&id, &page, tip.as_ref())).await?;
                 debug!(account = %account, events = count, checkpoint, "applied a page");
+                if let (Some(observer), Some(mut report)) = (&self.observer, report) {
+                    report.checkpoint = checkpoint;
+                    observer.page_applied(&report);
+                }
             }
         }
         Ok(())
     }
 
-    async fn ensure(&self, account: &AccountId, e: &Event) -> Result<(), FollowError> {
+    async fn ensure(
+        &self,
+        account: &AccountId,
+        e: &Event,
+        roles: &Roles,
+    ) -> Result<(), FollowError> {
         match &e.body {
             EventBody::MessageAdded {
                 blob,
                 size,
                 received_at,
+                mailbox,
                 ..
             } => {
-                self.ensure_content(account, blob, *size, *received_at, e.at)
+                let role = match roles.get(mailbox) {
+                    Some(role) => *role,
+                    None => {
+                        let store = self.store.clone();
+                        let id = account.to_string();
+                        let mb = mailbox.clone();
+                        blocking(move || store.mailbox_role(&id, &mb))
+                            .await?
+                            .and_then(|r| serde_json::from_value(serde_json::Value::String(r)).ok())
+                    }
+                };
+                let context = ParseContext {
+                    account: account.to_string(),
+                    mailbox: Some(mailbox.clone()),
+                    role,
+                };
+                self.ensure_content(account, blob, *size, *received_at, e.at, &context)
                     .await
             }
             EventBody::ObjectUpserted {
@@ -336,14 +409,20 @@ impl Follower {
             .into());
         }
         let mut messages = 0usize;
-        for mailbox in snapshot.mailboxes.values() {
+        for (mailbox_id, mailbox) in &snapshot.mailboxes {
             for state in mailbox.items.values() {
+                let context = ParseContext {
+                    account: account.to_string(),
+                    mailbox: Some(mailbox_id.clone()),
+                    role: mailbox.info.role,
+                };
                 self.ensure_content(
                     account,
                     &state.blob,
                     state.size,
                     state.received_at,
                     snapshot.at,
+                    &context,
                 )
                 .await?;
                 messages += 1;
@@ -396,6 +475,7 @@ impl Follower {
         size: u64,
         received_at: Option<Timestamp>,
         seen_at: Timestamp,
+        context: &ParseContext,
     ) -> Result<(), FollowError> {
         let store = self.store.clone();
         let id = account.to_string();
@@ -404,17 +484,87 @@ impl Follower {
             return Ok(());
         }
         let bytes = self.read_blob(account, blob, size).await?;
+        let (parsed, version) = match bytes {
+            Some(bytes) => match self.parser.parse(&bytes, context).await {
+                Ok(mut parsed) => {
+                    parsed.available = true;
+                    (parsed, Some(self.parser.version()))
+                }
+                Err(ParseError::Refused) => {
+                    warn!(account = %account, blob = %blob, "the parser refused a message");
+                    (Parsed::unavailable(), Some(self.parser.version()))
+                }
+                Err(ParseError::Unavailable) => return Err(FollowError::Parser),
+            },
+            None => (Parsed::unavailable(), None),
+        };
         let store = self.store.clone();
         let id = account.to_string();
         let b = *blob;
         blocking(move || {
-            let parsed = match bytes {
-                Some(bytes) => parse(&bytes),
-                None => Parsed::unavailable(),
-            };
-            store.insert_content(&id, &b, size, received_at.map(|t| t.0), seen_at.0, &parsed)
+            store.insert_parsed(
+                &id,
+                &b,
+                size,
+                received_at.map(|t| t.0),
+                seen_at.0,
+                &parsed,
+                version.as_deref(),
+            )
         })
         .await
+    }
+
+    /// Parses again, with the current parser, at most `limit` stored messages that another
+    /// parser version produced ([`Store::stale_messages`]), replacing their parsed fields and
+    /// tags; threads, memberships and the address book stay. A refused message becomes
+    /// unavailable; one whose original is gone keeps its content and is marked with the current
+    /// version so it is not tried again. Returns how many were handled; stops early with
+    /// [`FollowError::Parser`] when the parser cannot run.
+    pub async fn reparse_stale(&self, limit: usize) -> Result<usize, FollowError> {
+        let version = self.parser.version();
+        let store = self.store.clone();
+        let v = version.clone();
+        let stale = blocking(move || store.stale_messages(&v, limit)).await?;
+        let mut done = 0;
+        for m in stale {
+            let Ok(account) = AccountId::new(&m.account) else {
+                continue;
+            };
+            if self.allow.as_ref().is_some_and(|a| !a.contains(&account)) {
+                continue;
+            }
+            let context = ParseContext {
+                account: m.account.clone(),
+                mailbox: m.mailbox.clone(),
+                role: m
+                    .role
+                    .clone()
+                    .and_then(|r| serde_json::from_value(serde_json::Value::String(r)).ok()),
+            };
+            let store = self.store.clone();
+            let v = version.clone();
+            match self.read_blob(&account, &m.blob, m.size).await? {
+                Some(bytes) => {
+                    let parsed = match self.parser.parse(&bytes, &context).await {
+                        Ok(mut parsed) => {
+                            parsed.available = true;
+                            parsed
+                        }
+                        Err(ParseError::Refused) => Parsed::unavailable(),
+                        Err(ParseError::Unavailable) => return Err(FollowError::Parser),
+                    };
+                    blocking(move || store.replace_parsed(&m.account, &m.blob, &parsed, &v))
+                        .await?;
+                }
+                None => blocking(move || store.mark_parsed(&m.account, &m.blob, &v)).await?,
+            }
+            done += 1;
+        }
+        if done > 0 {
+            info!(messages = done, "parsed again with a new parser version");
+        }
+        Ok(done)
     }
 
     async fn ensure_object(
@@ -500,6 +650,9 @@ impl Follower {
                     warn!(account = %account, error = %e, "account sync failed");
                 }
             }
+            if let Err(e) = self.reparse_stale(REPARSE_PER_ROUND).await {
+                warn!(error = %e, "parsing again failed");
+            }
         }
         for (_, task) in subscribed {
             task.abort();
@@ -569,4 +722,106 @@ fn check_settled(
         return Err(IntegrityError::Fork { seq: checkpoint }.into());
     }
     Ok(())
+}
+
+fn page_roles(page: &[Event]) -> Roles {
+    page.iter()
+        .filter_map(|e| match &e.body {
+            EventBody::MailboxUpserted { mailbox } => Some((mailbox.id.clone(), mailbox.role)),
+            _ => None,
+        })
+        .collect()
+}
+
+fn report_of(account: &AccountId, page: &[Event], head: u64) -> PageReport {
+    let mut touched = BTreeSet::new();
+    let mut many = false;
+    let mut report = PageReport {
+        account: account.to_string(),
+        head,
+        ..PageReport::default()
+    };
+    let mut touch = |mailbox: &str| {
+        if !many {
+            touched.insert(mailbox.to_owned());
+            if touched.len() > crate::observe::MAX_TOUCHED {
+                many = true;
+            }
+        }
+    };
+    for e in page {
+        match &e.body {
+            EventBody::MessageAdded {
+                mailbox,
+                blob,
+                flags,
+                ..
+            } => {
+                report.messages_added += 1;
+                if report.added.len() < crate::observe::MAX_ADDED {
+                    report.added.push(Added {
+                        mailbox: mailbox.clone(),
+                        message: blob.to_hex(),
+                        seen: flags.contains("\\Seen"),
+                    });
+                }
+                touch(mailbox);
+            }
+            EventBody::MessageRemoved { mailbox, .. }
+            | EventBody::FlagsChanged { mailbox, .. }
+            | EventBody::LabelsChanged { mailbox, .. } => touch(mailbox),
+            EventBody::ResyncRequired { collection, .. } => touch(collection),
+            EventBody::MailboxUpserted { .. } => report.mailboxes_changed = true,
+            EventBody::MailboxDeleted { mailbox } => {
+                report.mailboxes_changed = true;
+                touch(mailbox);
+            }
+            EventBody::FirstSyncCompleted => report.first_sync_completed = true,
+            EventBody::WriteApplied { command } => {
+                report.outcome(command, OutcomeKind::Applied, None)
+            }
+            EventBody::WriteFailed { command, reason } => {
+                report.outcome(command, OutcomeKind::Failed, Some(reason))
+            }
+            EventBody::Conflict { command, .. } => {
+                report.outcome(command, OutcomeKind::Conflict, None)
+            }
+            EventBody::WriteUncertain { command } => {
+                report.outcome(command, OutcomeKind::Uncertain, None)
+            }
+            EventBody::SendResult {
+                command, refused, ..
+            } => report.outcome(
+                command,
+                OutcomeKind::Sent {
+                    refused: refused.len().min(u32::MAX as usize) as u32,
+                },
+                None,
+            ),
+            _ => {}
+        }
+    }
+    report.mailboxes = if many {
+        Touched::Many
+    } else {
+        Touched::Some(touched.into_iter().collect())
+    };
+    report
+}
+
+impl PageReport {
+    fn outcome(
+        &mut self,
+        command: &skein_core::CommandId,
+        kind: OutcomeKind,
+        reason: Option<&String>,
+    ) {
+        if self.outcomes.len() < crate::observe::MAX_OUTCOMES {
+            self.outcomes.push(CommandOutcome {
+                command: command.to_string(),
+                kind,
+                reason: reason.map(|r| crate::observe::reason_word(r)),
+            });
+        }
+    }
 }

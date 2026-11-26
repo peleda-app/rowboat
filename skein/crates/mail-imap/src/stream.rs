@@ -70,7 +70,7 @@ async fn await_greeting(
 ) -> Result<(), MailError> {
     let mut first = [0u8; 1];
     match tokio::time::timeout(wait, tcp.peek(&mut first)).await {
-        Err(_) => Err(MailError::Network(format!(
+        Err(_) => Err(MailError::Timeout(format!(
             "{host}:{port} sent no greeting within {} s; {TLS_HINT}",
             wait.as_secs_f32()
         ))),
@@ -78,7 +78,7 @@ async fn await_greeting(
         Ok(Ok(0)) => Err(MailError::Network(format!(
             "{host}:{port} closed the connection before the greeting"
         ))),
-        Ok(Ok(_)) if matches!(first[0], 0x15 | 0x16) => Err(MailError::Network(format!(
+        Ok(Ok(_)) if matches!(first[0], 0x15 | 0x16) => Err(MailError::Tls(format!(
             "{host}:{port} answered with TLS; {TLS_HINT}"
         ))),
         Ok(Ok(_)) => Ok(()),
@@ -101,15 +101,17 @@ async fn handshake(
                 .and_then(|inner| inner.downcast_ref::<tokio_rustls::rustls::Error>())
                 .is_some_and(|tls| matches!(tls, tokio_rustls::rustls::Error::InvalidMessage(_)));
             if plain {
-                MailError::Network(format!("TLS with {host}: {e}; {PLAIN_HINT}"))
+                MailError::Tls(format!("TLS with {host}: {e}; {PLAIN_HINT}"))
             } else {
-                MailError::Network(format!("TLS with {host}: {e}"))
+                MailError::Tls(format!("TLS with {host}: {e}"))
             }
         })
 }
 
 /// Longest line accepted before TLS is up.
 const PLAIN_LINE_LIMIT: u64 = 8 * 1024;
+/// Most untagged lines accepted while waiting for the answer to `STARTTLS`.
+const PLAIN_LINES_LIMIT: usize = 64;
 
 async fn plain_line(reader: &mut BufReader<TcpStream>, line: &mut String) -> Result<(), MailError> {
     line.clear();
@@ -132,7 +134,7 @@ async fn starttls(tcp: TcpStream) -> Result<TcpStream, MailError> {
     let mut line = String::new();
     plain_line(&mut reader, &mut line).await?;
     if !line.starts_with("* OK") {
-        return Err(MailError::Network(
+        return Err(MailError::Refused(
             "the server refused the connection at the greeting".into(),
         ));
     }
@@ -141,7 +143,7 @@ async fn starttls(tcp: TcpStream) -> Result<TcpStream, MailError> {
         .write_all(b"a0 STARTTLS\r\n")
         .await
         .map_err(|e| MailError::Network(e.to_string()))?;
-    loop {
+    for _ in 0..PLAIN_LINES_LIMIT {
         plain_line(&mut reader, &mut line).await?;
         if line.starts_with("a0 OK") {
             if !reader.buffer().is_empty() {
@@ -152,11 +154,14 @@ async fn starttls(tcp: TcpStream) -> Result<TcpStream, MailError> {
             return Ok(reader.into_inner());
         }
         if line.starts_with("a0 ") {
-            return Err(MailError::Config(
+            return Err(MailError::Insecure(
                 "the server does not offer STARTTLS; refusing to continue in plain text".into(),
             ));
         }
     }
+    Err(MailError::Protocol(
+        "too many lines before the answer to STARTTLS".into(),
+    ))
 }
 
 impl AsyncRead for ImapStream {

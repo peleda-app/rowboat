@@ -46,8 +46,13 @@ pub(crate) fn mail_outcome(e: &EngineError) -> Option<SyncOutcome> {
         EngineError::Mail(m) => match m {
             MailError::Auth => SyncOutcome::AuthFailed,
             MailError::Config(_) => SyncOutcome::Config,
+            MailError::Insecure(_) => SyncOutcome::Insecure,
             MailError::Throttled { .. } => SyncOutcome::Throttled,
             MailError::Network(_) => SyncOutcome::Network,
+            MailError::Tls(_) => SyncOutcome::Tls,
+            MailError::Timeout(_) => SyncOutcome::Timeout,
+            MailError::Quota => SyncOutcome::Quota,
+            MailError::Refused(_) => SyncOutcome::Refused,
             MailError::Protocol(_) | MailError::MailboxNotFound => SyncOutcome::Protocol,
         },
         EngineError::Storage(_) => SyncOutcome::Storage,
@@ -75,6 +80,9 @@ pub(crate) fn send_outcome(e: &SendError) -> Option<SyncOutcome> {
     match e {
         SendError::Auth(_) => Some(SyncOutcome::AuthFailed),
         SendError::Invalid(_) => Some(SyncOutcome::Config),
+        SendError::Insecure(_) => Some(SyncOutcome::Insecure),
+        SendError::Tls(_) => Some(SyncOutcome::Tls),
+        SendError::Timeout(_) => Some(SyncOutcome::Timeout),
         SendError::Throttled { .. } => Some(SyncOutcome::Throttled),
         SendError::Temporary(_) | SendError::Unavailable(_) | SendError::Uncertain(_) => {
             Some(SyncOutcome::Network)

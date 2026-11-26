@@ -50,3 +50,8 @@ pub fn cursor(bytes: &[u8]) {
         assert_eq!(CursorState::decode(&c.encode()), Ok(c));
     }
 }
+
+/// Runs the pre-sign-in probe's reader over `bytes` as a server's greeting and answers.
+pub fn probe(bytes: &[u8]) {
+    crate::probe::fuzz_probe(bytes);
+}

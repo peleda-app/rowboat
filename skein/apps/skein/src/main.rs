@@ -155,7 +155,11 @@ fn main() -> anyhow::Result<()> {
             let config = Config::load(&config)?;
             let tenant = skein_core::TenantId::new(tenant)?;
             let rt = tokio::runtime::Runtime::new()?;
-            let n = rt.block_on(transfer::export(objects(&config.storage)?, &tenant, &out))?;
+            let n = rt.block_on(transfer::export(
+                objects(&config.storage, Access::Shared)?,
+                &tenant,
+                &out,
+            ))?;
             println!("exported {n} objects of {tenant} to {}", out.display());
             Ok(())
         }
@@ -167,7 +171,11 @@ fn main() -> anyhow::Result<()> {
             let config = Config::load(&config)?;
             let tenant = skein_core::TenantId::new(tenant)?;
             let rt = tokio::runtime::Runtime::new()?;
-            let c = rt.block_on(transfer::import(objects(&config.storage)?, &tenant, &input))?;
+            let c = rt.block_on(transfer::import(
+                objects(&config.storage, Access::Shared)?,
+                &tenant,
+                &input,
+            ))?;
             println!(
                 "imported {} objects of {tenant}; {} were already there, {} differed and were left alone",
                 c.copied, c.same, c.different
@@ -180,8 +188,8 @@ fn main() -> anyhow::Result<()> {
             let tenant = skein_core::TenantId::new(tenant)?;
             let rt = tokio::runtime::Runtime::new()?;
             let c = rt.block_on(transfer::copy(
-                objects(&from.storage)?,
-                objects(&to.storage)?,
+                objects(&from.storage, Access::Shared)?,
+                objects(&to.storage, Access::Shared)?,
                 &tenant,
             ))?;
             println!(
@@ -206,12 +214,23 @@ fn main() -> anyhow::Result<()> {
     }
 }
 
-pub(crate) fn objects(config: &StorageConfig) -> anyhow::Result<Arc<dyn Objects>> {
+/// Who opens the storage: the one `serve` that owns a directory, or a subcommand that works beside
+/// it.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Access {
+    Owner,
+    Shared,
+}
+
+pub(crate) fn objects(config: &StorageConfig, access: Access) -> anyhow::Result<Arc<dyn Objects>> {
     Ok(match config {
         StorageConfig::Memory => Arc::new(skein_storage_memory::MemoryObjects::new()),
         StorageConfig::Fs { path } => Arc::new(
-            skein_storage_fs::FsObjects::open(path)
-                .with_context(|| format!("cannot open storage at {}", path.display()))?,
+            match access {
+                Access::Owner => skein_storage_fs::FsObjects::open(path),
+                Access::Shared => skein_storage_fs::FsObjects::open_shared(path),
+            }
+            .with_context(|| format!("cannot open storage at {}", path.display()))?,
         ),
         StorageConfig::S3 {
             endpoint,
@@ -279,6 +298,7 @@ async fn serve(config: Config) -> anyhow::Result<()> {
 
     let counting = Arc::new(skein_storage::CountingObjects::new(objects(
         &config.storage,
+        Access::Owner,
     )?));
     let _ = storage_counts.set(counting.clone());
     let objects: Arc<dyn Objects> = counting.clone();

@@ -338,10 +338,7 @@ async fn starttls_and_auth_plain_with_a_test_ca() {
         },
         password("correct horse"),
     );
-    assert!(matches!(
-        untrusted.check().await,
-        Err(SendError::Unavailable(_))
-    ));
+    assert!(matches!(untrusted.check().await, Err(SendError::Tls(_))));
     let other = TestCa::new(&["localhost"]);
     let wrong_ca = sender(
         SmtpSettings {
@@ -352,7 +349,7 @@ async fn starttls_and_auth_plain_with_a_test_ca() {
     );
     assert!(matches!(
         wrong_ca.send(&envelope(), MESSAGE).await,
-        Err(SendError::Unavailable(_))
+        Err(SendError::Tls(_))
     ));
     assert_eq!(seen.deliveries.all().len(), 1);
 }
@@ -372,7 +369,7 @@ async fn refuses_a_server_without_starttls() {
     };
     assert!(matches!(
         sender(settings, password("secret")).check().await,
-        Err(SendError::Unavailable(_))
+        Err(SendError::Insecure(_))
     ));
     assert!(
         !seen.commands().iter().any(|c| c.starts_with("AUTH")),
@@ -658,7 +655,7 @@ fn refuses_unsafe_settings_and_hides_secrets() {
     };
     assert!(matches!(
         SmtpSender::new(open, None),
-        Err(SendError::Invalid(_))
+        Err(SendError::Insecure(_))
     ));
     for host in ["localhost", "127.0.0.1", "[::1]"] {
         let local = SmtpSettings {
@@ -705,4 +702,137 @@ fn fuzz_entry_reads_replies_until_the_bytes_end_or_one_is_malformed() {
     crate::fuzzing::replies(b"\xff\xfe\xfd 1\r\n");
     crate::fuzzing::replies(&b"250-x\r\n".repeat(200));
     crate::fuzzing::replies(&[b'5'; 10_000]);
+}
+
+#[tokio::test]
+async fn probes_without_credentials_over_tls_and_starttls() {
+    let ca = TestCa::new(&["localhost"]);
+    for (security, script) in [
+        (
+            Security::Starttls,
+            Script {
+                extensions: vec!["AUTH PLAIN LOGIN XOAUTH2".into(), "SIZE 1000".into()],
+                plain: Some(("ada", "correct horse")),
+                starttls: Some(ca.acceptor()),
+                ..Script::new()
+            },
+        ),
+        (
+            Security::Tls,
+            Script {
+                extensions: vec!["AUTH PLAIN LOGIN XOAUTH2".into(), "SIZE 1000".into()],
+                tls: Some(ca.acceptor()),
+                ..Script::new()
+            },
+        ),
+    ] {
+        let (port, seen) = serve(script).await;
+        let report = crate::probe(
+            "localhost",
+            port,
+            security,
+            &ca.roots(),
+            Duration::from_secs(5),
+        )
+        .await
+        .expect("probe");
+        assert!(report.password_sign_in && report.oauth);
+        assert_eq!(report.max_size, Some(1000));
+        let commands = seen.commands();
+        assert!(
+            commands
+                .iter()
+                .all(|c| c.starts_with("EHLO") || c == "STARTTLS" || c == "QUIT"),
+            "{commands:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn probes_refuse_plain_servers_bad_certificates_and_silence() {
+    let ca = TestCa::new(&["localhost"]);
+    let (plain_port, seen) = serve(Script {
+        extensions: vec!["AUTH PLAIN".into()],
+        ..Script::new()
+    })
+    .await;
+    let insecure = crate::probe(
+        "localhost",
+        plain_port,
+        Security::Starttls,
+        &ca.roots(),
+        Duration::from_secs(5),
+    )
+    .await;
+    assert!(
+        matches!(insecure, Err(SendError::Insecure(_))),
+        "{insecure:?}"
+    );
+    let plain = crate::probe(
+        "localhost",
+        plain_port,
+        Security::Plain,
+        &ca.roots(),
+        Duration::from_secs(5),
+    )
+    .await;
+    assert!(matches!(plain, Err(SendError::Insecure(_))));
+    assert!(!seen.commands().iter().any(|c| c.starts_with("AUTH")));
+
+    let (tls_port, _) = serve(Script {
+        tls: Some(ca.acceptor()),
+        ..Script::new()
+    })
+    .await;
+    let untrusted = crate::probe(
+        "localhost",
+        tls_port,
+        Security::Tls,
+        &TestCa::new(&["localhost"]).roots(),
+        Duration::from_secs(5),
+    )
+    .await;
+    assert!(matches!(untrusted, Err(SendError::Tls(_))), "{untrusted:?}");
+
+    let (refusing, _) = serve(Script {
+        greeting: "554 5.3.2 go away",
+        tls: Some(ca.acceptor()),
+        ..Script::new()
+    })
+    .await;
+    let refused = crate::probe(
+        "localhost",
+        refusing,
+        Security::Tls,
+        &ca.roots(),
+        Duration::from_secs(5),
+    )
+    .await;
+    assert!(
+        matches!(refused, Err(SendError::Unavailable(_))),
+        "{refused:?}"
+    );
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let silent = listener.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        let mut open = Vec::new();
+        while let Ok((socket, _)) = listener.accept().await {
+            open.push(socket);
+        }
+    });
+    let started = std::time::Instant::now();
+    let timed_out = crate::probe(
+        "localhost",
+        silent,
+        Security::Tls,
+        &ca.roots(),
+        Duration::from_millis(300),
+    )
+    .await;
+    assert!(
+        matches!(timed_out, Err(SendError::Timeout(_))),
+        "{timed_out:?}"
+    );
+    assert!(started.elapsed() < Duration::from_secs(5));
 }

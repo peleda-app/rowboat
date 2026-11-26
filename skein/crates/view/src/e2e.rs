@@ -926,3 +926,229 @@ async fn a_corrupt_or_oversized_original_is_kept_as_unavailable() {
     assert_eq!(all.len(), 2);
     assert!(all.iter().all(|m| !m.available));
 }
+
+struct Tagging;
+
+#[async_trait]
+impl crate::parse::MessageParser for Tagging {
+    async fn parse(
+        &self,
+        raw: &Bytes,
+        context: &crate::parse::ParseContext,
+    ) -> Result<crate::parse::Parsed, crate::parse::ParseError> {
+        if raw.starts_with(b"X-Refuse") {
+            return Err(crate::parse::ParseError::Refused);
+        }
+        let mut parsed = crate::parse::parse(raw);
+        parsed.html = None;
+        parsed.tags = vec![
+            match context.role {
+                Some(MailboxRole::Junk) => "spam.junk".into(),
+                _ => "spam.clean".into(),
+            },
+            "Not A Tag".into(),
+        ];
+        Ok(parsed)
+    }
+
+    fn version(&self) -> String {
+        "tagging-1".into()
+    }
+}
+
+#[derive(Default)]
+struct Recorder(std::sync::Mutex<Vec<crate::observe::PageReport>>);
+
+impl crate::observe::ViewObserver for Recorder {
+    fn page_applied(&self, report: &crate::observe::PageReport) {
+        self.0.lock().unwrap().push(report.clone());
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_parser_hook_tags_messages_and_an_observer_sees_every_page() {
+    use crate::observe::{OutcomeKind, Touched};
+    use crate::store::Filter;
+    let j = Journal::new();
+    let plain = fixture("plain.eml");
+    let multi = fixture("multipart.eml");
+    let refused = b"X-Refuse: yes\r\nSubject: hostile\r\n\r\nbody".to_vec();
+    let command = skein_core::CommandId::generate();
+    let mut events = vec![
+        mailbox("INBOX", Some(MailboxRole::Inbox)),
+        mailbox("Spam", Some(MailboxRole::Junk)),
+    ];
+    events.push(j.added("INBOX", "1", &plain, 1_000).await);
+    events.push(j.added("Spam", "2", &multi, 2_000).await);
+    events.push(j.added("INBOX", "3", &refused, 3_000).await);
+    events.push(event(EventBody::WriteApplied {
+        command: command.clone(),
+    }));
+    events.push(event(EventBody::WriteFailed {
+        command: command.clone(),
+        reason: "Mailbox INBOX is gone".into(),
+    }));
+    events.push(event(EventBody::FirstSyncCompleted));
+    j.append(events).await;
+
+    let dir = tempfile::tempdir().unwrap();
+    let store = Arc::new(Store::open(&dir.path().join("view.sqlite")).unwrap());
+    let recorder = Arc::new(Recorder::default());
+    let follower = Follower::new(Storage::over(j.objects.clone()), t(), store.clone())
+        .with_parser(Arc::new(Tagging))
+        .with_observer(recorder.clone());
+    follower.sync_once().await.unwrap();
+
+    let all = store
+        .messages_where("box", &Filter::default(), None, 10)
+        .unwrap();
+    assert_eq!(all.len(), 3);
+    let junk = store
+        .messages_where(
+            "box",
+            &Filter {
+                tag: Some("spam.junk".into()),
+                ..Filter::default()
+            },
+            None,
+            10,
+        )
+        .unwrap();
+    assert_eq!(junk.len(), 1);
+    assert_eq!(junk[0].id, BlobHash::of(&multi).to_string());
+    assert_eq!(junk[0].tags, vec!["spam.junk".to_owned()]);
+    let hostile = store
+        .message("box", &BlobHash::of(&refused).to_string())
+        .unwrap()
+        .unwrap();
+    assert!(!hostile.envelope.available);
+    assert!(hostile.envelope.tags.is_empty());
+    assert!(hostile.html.is_none());
+
+    let reports = recorder.0.lock().unwrap().clone();
+    assert_eq!(reports.len(), 1);
+    let r = &reports[0];
+    assert_eq!((r.checkpoint, r.head, r.messages_added), (8, 8, 3));
+    assert_eq!(r.added.len(), 3);
+    assert!(
+        r.added
+            .iter()
+            .any(|a| a.message == BlobHash::of(&multi).to_string())
+    );
+    assert!(r.added.iter().all(|a| a.message.len() == 64));
+    assert!(r.first_sync_completed && r.mailboxes_changed && !r.rebuilt);
+    assert_eq!(
+        r.mailboxes,
+        Touched::Some(vec!["INBOX".into(), "Spam".into()])
+    );
+    assert_eq!(r.outcomes.len(), 2);
+    assert_eq!(r.outcomes[0].kind, OutcomeKind::Applied);
+    assert_eq!(r.outcomes[1].kind, OutcomeKind::Failed);
+    assert_eq!(r.outcomes[1].reason.as_deref(), Some("other"));
+    assert_eq!(r.outcomes[1].command, command.to_string());
+}
+
+struct Down;
+
+#[async_trait]
+impl crate::parse::MessageParser for Down {
+    async fn parse(
+        &self,
+        _: &Bytes,
+        _: &crate::parse::ParseContext,
+    ) -> Result<crate::parse::Parsed, crate::parse::ParseError> {
+        Err(crate::parse::ParseError::Unavailable)
+    }
+
+    fn version(&self) -> String {
+        "down".into()
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_unavailable_parser_leaves_the_page_for_the_next_round() {
+    let j = Journal::new();
+    let plain = fixture("plain.eml");
+    let added = j.added("INBOX", "1", &plain, 1_000).await;
+    j.append(vec![mailbox("INBOX", Some(MailboxRole::Inbox)), added])
+        .await;
+    let dir = tempfile::tempdir().unwrap();
+    let store = Arc::new(Store::open(&dir.path().join("view.sqlite")).unwrap());
+    let down = Follower::new(Storage::over(j.objects.clone()), t(), store.clone())
+        .with_parser(Arc::new(Down));
+    assert!(matches!(
+        down.sync_account(&a()).await,
+        Err(FollowError::Parser)
+    ));
+    assert_eq!(store.checkpoint("box").unwrap(), 0);
+    let up = Follower::new(Storage::over(j.objects.clone()), t(), store.clone());
+    up.sync_account(&a()).await.unwrap();
+    assert_eq!(store.checkpoint("box").unwrap(), 2);
+    assert!(store.messages("box", None, None, 10).unwrap()[0].available);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_new_parser_version_parses_stored_messages_again_in_bounded_rounds() {
+    use crate::store::Filter;
+    let j = Journal::new();
+    let plain = fixture("plain.eml");
+    let multi = fixture("multipart.eml");
+    let refused = b"X-Refuse: yes\r\nSubject: hostile\r\n\r\nbody".to_vec();
+    let mut events = vec![
+        mailbox("INBOX", Some(MailboxRole::Inbox)),
+        mailbox("Spam", Some(MailboxRole::Junk)),
+    ];
+    events.push(j.added("INBOX", "1", &plain, 1_000).await);
+    events.push(j.added("Spam", "2", &multi, 2_000).await);
+    events.push(j.added("INBOX", "3", &refused, 3_000).await);
+    j.append(events).await;
+    let dir = tempfile::tempdir().unwrap();
+    let store = Arc::new(Store::open(&dir.path().join("view.sqlite")).unwrap());
+    let old = Follower::new(Storage::over(j.objects.clone()), t(), store.clone());
+    old.sync_once().await.unwrap();
+    assert_eq!(old.reparse_stale(10).await.unwrap(), 0, "nothing is stale");
+    let before = store.messages("box", None, None, 10).unwrap();
+    assert!(before.iter().all(|m| m.available && m.tags.is_empty()));
+
+    let gone = Follower::new(Storage::over(j.objects.clone()), t(), store.clone())
+        .with_parser(Arc::new(Down))
+        .with_max_blob_bytes(1);
+    assert_eq!(gone.reparse_stale(1).await.unwrap(), 1);
+    let kept = store.messages("box", None, None, 10).unwrap();
+    assert!(
+        kept.iter().all(|m| m.available),
+        "an unreadable original keeps its content"
+    );
+
+    let new = Follower::new(Storage::over(j.objects.clone()), t(), store.clone())
+        .with_parser(Arc::new(Tagging));
+    assert_eq!(new.reparse_stale(1).await.unwrap(), 1, "bounded per round");
+    assert_eq!(new.reparse_stale(10).await.unwrap(), 2);
+    assert_eq!(new.reparse_stale(10).await.unwrap(), 0);
+    let junk = store
+        .messages_where(
+            "box",
+            &Filter {
+                tag: Some("spam.junk".into()),
+                ..Filter::default()
+            },
+            None,
+            10,
+        )
+        .unwrap();
+    assert_eq!(junk.len(), 1);
+    assert_eq!(junk[0].id, BlobHash::of(&multi).to_string());
+    let hostile = store
+        .message("box", &BlobHash::of(&refused).to_string())
+        .unwrap()
+        .unwrap();
+    assert!(!hostile.envelope.available && hostile.envelope.tags.is_empty());
+    assert_eq!(store.messages("box", None, None, 10).unwrap().len(), 3);
+
+    let down = Follower::new(Storage::over(j.objects.clone()), t(), store.clone())
+        .with_parser(Arc::new(Down));
+    assert!(matches!(
+        down.reparse_stale(10).await,
+        Err(FollowError::Parser)
+    ));
+}

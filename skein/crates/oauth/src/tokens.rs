@@ -77,6 +77,7 @@ impl Grant {
 struct Cached {
     token: String,
     expires_at: Timestamp,
+    version: String,
 }
 
 /// Keeps OAuth grants sealed in control records (`credentials/{account}/oauth`) and hands out
@@ -89,7 +90,9 @@ struct Cached {
 ///   handed out, so it is never lost.
 /// - With a signal backend, access tokens are cached there as expiring values in the tenant's
 ///   group, sealed with the account's key, so a restart or another node does not refresh
-///   needlessly.
+///   needlessly. A cached token carries the version of the grant it came from and is used only
+///   while the stored grant still has that version, so a grant replaced or removed by another
+///   process (such as `skein account grant` beside a running server) takes effect at once.
 /// - A refresh token the provider no longer accepts is [`OAuthError::Revoked`]; so is an expired
 ///   access token handed in without a refresh token.
 pub struct TokenManager {
@@ -197,7 +200,8 @@ impl TokenManager {
             let now = Timestamp::now();
             if let Some(token) = grant.usable(now, self.margin) {
                 let token = token.to_owned();
-                self.cache(tenant, account, &token, grant.expires_at).await;
+                self.cache(tenant, account, &token, grant.expires_at, &version)
+                    .await;
                 return Ok(token);
             }
             let Some(refresh) = grant.refresh_token.clone() else {
@@ -219,10 +223,11 @@ impl TokenManager {
                 .put(tenant, &path(account), sealed, Expect::Version(version))
                 .await
             {
-                Ok(_) => {
+                Ok(stored) => {
                     debug!(%account, rotated = tokens.refresh_token.is_some(), "access token refreshed");
                     let token = tokens.access_token;
-                    self.cache(tenant, account, &token, next.expires_at).await;
+                    self.cache(tenant, account, &token, next.expires_at, &stored)
+                        .await;
                     return Ok(token);
                 }
                 Err(StorageError::Conflict) => {
@@ -319,8 +324,11 @@ impl TokenManager {
             .await
             .ok()?;
         let cached: Cached = serde_json::from_slice(&plain).ok()?;
-        (cached.expires_at.0 - self.margin.as_millis() as i64 > Timestamp::now().0)
-            .then_some(cached.token)
+        if cached.expires_at.0 - self.margin.as_millis() as i64 <= Timestamp::now().0 {
+            return None;
+        }
+        let (_, version) = self.control.get(tenant, &path(account)).await.ok()??;
+        (version.0 == cached.version).then_some(cached.token)
     }
 
     async fn cache(
@@ -329,6 +337,7 @@ impl TokenManager {
         account: &AccountId,
         token: &str,
         expires_at: Option<Timestamp>,
+        version: &skein_storage::Version,
     ) {
         let (Some(signal), Some(expires_at)) = (&self.signal, expires_at) else {
             return;
@@ -340,6 +349,7 @@ impl TokenManager {
         let plain = serde_json::to_vec(&Cached {
             token: token.to_owned(),
             expires_at,
+            version: version.0.clone(),
         })
         .expect("plain struct");
         let Ok(sealed) = self

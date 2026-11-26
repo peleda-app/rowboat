@@ -731,10 +731,9 @@ fn non_canonical_bytes_do_not_decode() {
     assert!(Entry::decode(&e.encode()).is_ok());
 }
 
-#[test]
-fn verifying_a_long_log_stays_linear() {
+fn verification_work(resources: usize) -> u64 {
     let mut w = w();
-    for i in 0..3_000 {
+    for i in 0..resources {
         w.log
             .append(
                 &w.laptop.id,
@@ -746,11 +745,18 @@ fn verifying_a_long_log_stays_linear() {
             .unwrap();
     }
     let entries = w.log.entries().to_vec();
-    let started = std::time::Instant::now();
+    crate::state::work::take();
     GroupLog::verify(entries).unwrap();
+    crate::state::work::take()
+}
+
+#[test]
+fn verifying_a_long_log_stays_linear() {
+    let small = verification_work(200);
+    let large = verification_work(600);
+    assert!(small >= 200, "{small}");
     assert!(
-        started.elapsed() < std::time::Duration::from_secs(20),
-        "{:?}",
-        started.elapsed()
+        large <= 3 * small + 30,
+        "verifying 3x the entries cost {large} units against {small}"
     );
 }

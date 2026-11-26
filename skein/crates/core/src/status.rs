@@ -19,6 +19,16 @@ pub enum SyncOutcome {
     Network,
     /// The provider answered something that could not be understood.
     Protocol,
+    /// The TLS handshake or the certificate check failed.
+    Tls,
+    /// The settings or the server would need credentials sent without encryption.
+    Insecure,
+    /// The provider did not answer in time.
+    Timeout,
+    /// The account's storage quota is full.
+    Quota,
+    /// The provider refused a request it understood.
+    Refused,
     /// Skein's own storage failed.
     Storage,
     /// Any other failure, including kinds a newer build knows.
@@ -131,7 +141,7 @@ mod tests {
     #[test]
     fn unknown_kinds_read_as_other() {
         let d: DomainStatus =
-            serde_json::from_str(r#"{"outcome":"quota","updated_at":5}"#).unwrap();
+            serde_json::from_str(r#"{"outcome":"a_later_kind","updated_at":5}"#).unwrap();
         assert_eq!(d.outcome, SyncOutcome::Other);
         assert!(!d.resync_required);
     }

@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 # Starts the containers in compose.yaml and runs every integration suite against them: the
 # storage requirements against both S3 servers (RustFS, Versity), everything else against Versity.
-# Usage: it.sh [extra cargo test args]
+# Usage: it.sh [extra cargo test args]; SKEIN_IT_STACK=up when the caller already started it.
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
-docker compose -f "$here/compose.yaml" up -d --wait --remove-orphans
+if [[ "${SKEIN_IT_STACK:-}" != up ]]; then
+  docker compose -f "$here/compose.yaml" up -d --wait --remove-orphans
+fi
 
 make_bucket() {
   for _ in $(seq 1 60); do

@@ -1,0 +1,28 @@
+[package]
+name = "rowboat-spam-signals"
+description = "Spam verdicts from the provider's junk placement and the receiving server's authentication results"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+readme = "docs/README.md"
+
+[package.metadata.dojo]
+kind = "implementation"
+implements = "rowboat-spam"
+
+[dependencies]
+rowboat-spam.workspace = true
+rinse-mail.workspace = true
+
+[dev-dependencies]
+rowboat-spam = { workspace = true, features = ["testing"] }
+rinse-mail = { workspace = true, features = ["testing"] }
+rinse-mail-direct.workspace = true
+bytes.workspace = true
+tokio.workspace = true
+
+[lints]
+workspace = true

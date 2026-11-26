@@ -14,9 +14,11 @@ The sending contract. Skein is not an MTA: a `Sender` hands the exact bytes of a
   - `message_id`: the `Message-ID` recipients got, as the header value with angle brackets (`<id@host>`), when the service replaced the message's own (Amazon SES does). `None` means the service keeps the message's own `Message-ID`, or the sender cannot know what it delivered. Callers that save a sent copy themselves use it so replies thread with the copy.
   - `provider_message_id`: the service's own id for the message (SES `MessageId`, Gmail message id, JMAP `EmailSubmission` id), for matching the service's later notifications; `None` when it gave none (SMTP, Graph). Never shown to recipients.
 -  `RecipientResult`, `RecipientOutcome::{Accepted, Refused(Refusal)}`, `Refusal { permanent, code, text }` (`text` may name addresses: never log it).
-- `SendError::{Auth, Refused, RecipientsRefused, Temporary, Throttled, Uncertain, TooLarge, Invalid, Unavailable}`:
+- `SendError::{Auth, Refused, RecipientsRefused, Temporary, Throttled, Uncertain, TooLarge, Invalid, Unavailable, Tls, Insecure, Timeout}`:
+  - `Tls`: the handshake or certificate check failed, or the server answered in plain text where TLS was expected, before anything was sent; `Insecure`: plain text to a remote host or a server without STARTTLS, nothing sent; `Timeout`: no answer within the deadline before the message was complete (after it, `Uncertain`).
+  - `cause()`: the variant as a closed, serializable `SendCause` without text (`unreachable` for `Unavailable`), for callers that must not match texts.
   - `Throttled { retry_after: Option<Duration> }`: the service refused the request for its rate (an HTTP `429`, or a `503` marked as throttling) before it took the message, so nothing was sent; `retry_after` is the `Retry-After` it gave, when it gave one.
-  - `is_retryable()`: temporary refusals, broken exchanges, throttling, unreachable services, recipient refusals with at least one temporary. Never for `Uncertain`.
+  - `is_retryable()`: temporary refusals, broken exchanges, throttling, unreachable services, TLS failures, timeouts, recipient refusals with at least one temporary. Never for `Uncertain` or `Insecure`.
   - `retry_after()`: the wait the service asked for before the next try, only from `Throttled`; `None` when it named none (SMTP never does: `421` and `451` carry no delay).
   - `may_have_been_sent()`: only `Uncertain`.
   - `reason()`: a machine-readable word without addresses or server text, for journal events and logs. `Display` never includes server text either.

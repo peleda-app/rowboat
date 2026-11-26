@@ -1,0 +1,29 @@
+[package]
+name = "rowboat-discover"
+description = "Contract of mail server discovery: candidate IMAP and SMTP servers for an address domain"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+readme = "docs/README.md"
+
+[package.metadata.dojo]
+kind = "contract"
+
+[features]
+testing = []
+
+[dependencies]
+async-trait.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+
+[lints]
+workspace = true

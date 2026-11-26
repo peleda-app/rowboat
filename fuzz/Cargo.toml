@@ -1,0 +1,59 @@
+[package]
+name = "rowboat-fuzz"
+version = "0.0.0"
+edition = "2024"
+license = "PolyForm-Noncommercial-1.0.0"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[package.metadata.dojo]
+kind = "fuzz"
+
+[dependencies]
+libfuzzer-sys = "0.4"
+rowboat-api = { path = "../crates/api" }
+rowboat-node = { path = "../crates/node" }
+rowboat-discover = { path = "../crates/discover" }
+rowboat-discover-autoconfig = { path = "../crates/discover-autoconfig" }
+rowboat-discover-net = { path = "../crates/discover-net" }
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[[bin]]
+name = "api_cursor"
+path = "fuzz_targets/api_cursor.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "api_request"
+path = "fuzz_targets/api_request.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "node_records"
+path = "fuzz_targets/node_records.rs"
+test = false
+doc = false
+bench = false
+
+
+[[bin]]
+name = "discover_autoconfig"
+path = "fuzz_targets/discover_autoconfig.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "discover_dns"
+path = "fuzz_targets/discover_dns.rs"
+test = false
+doc = false
+bench = false

@@ -1484,7 +1484,7 @@ fn refuses_plain_text_to_remote_hosts() {
     settings.security = Security::Plain;
     assert!(matches!(
         ImapProvider::new(settings.clone(), password()),
-        Err(MailError::Config(_))
+        Err(MailError::Insecure(_))
     ));
     settings.allow_insecure_plain = true;
     assert!(ImapProvider::new(settings, password()).is_ok());
@@ -1521,7 +1521,7 @@ async fn refuses_a_server_without_starttls() {
     .unwrap()
     .with_timeout(Duration::from_secs(5));
     let error = provider.connect().await.err().unwrap();
-    assert!(matches!(error, MailError::Config(_)), "{error:?}");
+    assert!(matches!(error, MailError::Insecure(_)), "{error:?}");
     assert!(
         !verbs(&fake).iter().any(|v| v == "LOGIN"),
         "no credentials after a refused STARTTLS"
@@ -1544,7 +1544,7 @@ async fn trusts_extra_roots_only_when_given() {
     .unwrap();
     assert!(matches!(
         untrusted.connect().await.err(),
-        Some(MailError::Network(_))
+        Some(MailError::Tls(_))
     ));
     settings.roots = TestCa::new(&["localhost"]).roots();
     let other = ImapProvider::new(
@@ -1556,7 +1556,7 @@ async fn trusts_extra_roots_only_when_given() {
     .unwrap();
     assert!(matches!(
         other.connect().await.err(),
-        Some(MailError::Network(_))
+        Some(MailError::Tls(_))
     ));
     assert_eq!(verbs(&fake).iter().filter(|v| *v == "LOGIN").count(), 1);
 
@@ -1595,7 +1595,7 @@ async fn gives_up_on_a_server_that_stops_answering() {
     .await
     .err()
     .unwrap();
-    assert!(matches!(error, MailError::Network(_)), "{error}");
+    assert!(matches!(error, MailError::Timeout(_)), "{error}");
     assert!(started.elapsed() < Duration::from_secs(5));
 }
 
@@ -1653,3 +1653,122 @@ async fn a_removal_during_a_paged_listing_is_not_lost() {
 }
 
 mod write;
+
+#[tokio::test(flavor = "multi_thread")]
+async fn probes_tls_and_starttls_servers_without_signing_in() {
+    let ca = TestCa::new(&["localhost"]);
+    for transport in [
+        Transport::Tls(ca.acceptor()),
+        Transport::Starttls(ca.acceptor()),
+    ] {
+        let fake = Fake::start_with(BARE, transport, Some(&ca)).await;
+        let report = crate::probe(
+            "localhost",
+            fake.port,
+            fake.security,
+            &ca.roots(),
+            Duration::from_secs(5),
+        )
+        .await
+        .unwrap();
+        assert!(report.capabilities.contains(&"IMAP4REV1".to_owned()));
+        assert!(report.password_sign_in);
+        let seen = verbs(&fake);
+        assert!(
+            !seen
+                .iter()
+                .any(|v| v == "LOGIN" || v == "AUTHENTICATE" || v == "SELECT"),
+            "{seen:?}"
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn probes_refuse_untrusted_certificates_plain_servers_and_wrong_ports() {
+    let ca = TestCa::new(&["localhost"]);
+    let tls = Fake::start_with(BARE, Transport::Tls(ca.acceptor()), Some(&ca)).await;
+    let untrusted = crate::probe(
+        "localhost",
+        tls.port,
+        Security::Tls,
+        &skein_core::TlsRoots::default(),
+        Duration::from_secs(5),
+    )
+    .await
+    .unwrap_err();
+    assert!(matches!(untrusted, MailError::Tls(_)), "{untrusted:?}");
+    let other = crate::probe(
+        "localhost",
+        tls.port,
+        Security::Tls,
+        &TestCa::new(&["localhost"]).roots(),
+        Duration::from_secs(5),
+    )
+    .await
+    .unwrap_err();
+    assert!(matches!(other, MailError::Tls(_)), "{other:?}");
+    let wrong_name = crate::probe(
+        "127.0.0.1",
+        tls.port,
+        Security::Tls,
+        &ca.roots(),
+        Duration::from_secs(5),
+    )
+    .await
+    .unwrap_err();
+    assert!(matches!(wrong_name, MailError::Tls(_)), "{wrong_name:?}");
+    assert!(!verbs(&tls).iter().any(|v| v == "LOGIN"));
+
+    let plain = Fake::start(BARE).await;
+    let no_starttls = crate::probe(
+        "localhost",
+        plain.port,
+        Security::Starttls,
+        &ca.roots(),
+        Duration::from_secs(5),
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        matches!(no_starttls, MailError::Insecure(_)),
+        "{no_starttls:?}"
+    );
+    let tls_on_plain = crate::probe(
+        "localhost",
+        plain.port,
+        Security::Tls,
+        &ca.roots(),
+        Duration::from_secs(5),
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        matches!(tls_on_plain, MailError::Tls(_)),
+        "{tls_on_plain:?}"
+    );
+    assert!(!verbs(&plain).iter().any(|v| v == "LOGIN"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_silent_server_ends_the_probe_in_time() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        let mut open = Vec::new();
+        while let Ok((socket, _)) = listener.accept().await {
+            open.push(socket);
+        }
+    });
+    let started = std::time::Instant::now();
+    let error = crate::probe(
+        "localhost",
+        port,
+        Security::Tls,
+        &skein_core::TlsRoots::default(),
+        Duration::from_millis(300),
+    )
+    .await
+    .unwrap_err();
+    assert!(matches!(error, MailError::Timeout(_)), "{error:?}");
+    assert!(started.elapsed() < Duration::from_secs(5));
+}

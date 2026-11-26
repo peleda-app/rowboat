@@ -10,6 +10,7 @@ mod cursor;
 #[doc(hidden)]
 pub mod fuzzing;
 mod labels;
+mod probe;
 mod session;
 mod stream;
 mod utf7;
@@ -28,6 +29,10 @@ use serde::{Deserialize, Serialize};
 use skein_core::{Credentials, MailboxInfo, MailboxRole, TlsRoots};
 use skein_mail::{MailError, MailProvider, MailSession, MailWatch};
 use stream::ImapStream;
+
+pub use probe::{
+    ImapProbe, PROBE_BYTE_LIMIT, PROBE_CAPABILITIES, PROBE_LINE_COUNT, PROBE_LINE_LIMIT, probe,
+};
 
 type Session = async_imap::Session<ImapStream>;
 
@@ -159,7 +164,7 @@ impl ImapProvider {
             return Err(MailError::Config("the host is empty".into()));
         }
         if settings.security == Security::Plain && !settings.plain_allowed() {
-            return Err(MailError::Config(
+            return Err(MailError::Insecure(
                 "plain text is allowed only to loopback hosts; use tls or starttls, or set allow_insecure_plain"
                     .into(),
             ));
@@ -245,7 +250,7 @@ impl ImapProvider {
         )
         .await??;
         if !stream.is_encrypted() && !settings.plain_allowed() {
-            return Err(MailError::Config(
+            return Err(MailError::Insecure(
                 "refusing to send credentials in plain text to a remote host".into(),
             ));
         }
@@ -260,7 +265,7 @@ impl ImapProvider {
                 ..
             } = response.parsed()
             {
-                return Err(MailError::Network(
+                return Err(MailError::Refused(
                     "the server refused the connection at the greeting".into(),
                 ));
             }
@@ -512,6 +517,11 @@ impl async_imap::Authenticator for Xoauth2 {
     }
 }
 
+/// The RFC 9208 `OVERQUOTA` response code, or RFC 5530 `OVERQUOTA` (same token).
+fn quota_hint(text: &str) -> bool {
+    text.to_ascii_uppercase().contains("[OVERQUOTA]")
+}
+
 /// Response codes and texts servers use when they limit a user: RFC 5530 `LIMIT`,
 /// `UNAVAILABLE` and `INUSE`, Gmail's "Too many simultaneous connections" and `THROTTLED`.
 fn throttle_hint(text: &str) -> bool {
@@ -527,7 +537,7 @@ pub(crate) async fn timed<T>(
 ) -> Result<T, MailError> {
     tokio::time::timeout(timeout, work)
         .await
-        .map_err(|_| MailError::Network("the server did not answer in time".into()))
+        .map_err(|_| MailError::Timeout("the server did not answer in time".into()))
 }
 
 /// Maps a library error without carrying server text, which may echo mailbox names.
@@ -539,11 +549,12 @@ pub(crate) fn convert(error: async_imap::error::Error) -> MailError {
         Error::No(text) | Error::Bad(text) if throttle_hint(&text) => {
             MailError::Throttled { retry_after: None }
         }
-        Error::No(_) => MailError::Protocol("the server refused a command".into()),
+        Error::No(text) if quota_hint(&text) => MailError::Quota,
+        Error::No(_) => MailError::Refused("the server refused a command".into()),
         Error::Bad(_) => MailError::Protocol("the server rejected a command as malformed".into()),
         Error::Parse(_) => MailError::Protocol("unparsable server response".into()),
         Error::Validate(_) => MailError::Protocol("an argument IMAP cannot send".into()),
-        Error::Append => MailError::Protocol("append refused".into()),
+        Error::Append => MailError::Refused("append refused".into()),
         _ => MailError::Protocol("unexpected server response".into()),
     }
 }

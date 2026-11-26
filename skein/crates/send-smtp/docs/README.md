@@ -4,9 +4,10 @@ The sending contract (`skein-send`) over SMTP submission (RFC 6409). `SmtpSender
 
 ## Public API
 
-- `SmtpSender::new(settings, credentials: Option<Credentials>)`: a password signs in with `AUTH PLAIN` (`LOGIN` when `PLAIN` is not offered), an access token with `XOAUTH2`; no sign-in without a `username`. `Invalid` before anything is sent for plain text to a host that is not loopback, a user name without credentials, an empty host, a bad `EHLO` name or an extra root that is not a certificate.
+- `SmtpSender::new(settings, credentials: Option<Credentials>)`: a password signs in with `AUTH PLAIN` (`LOGIN` when `PLAIN` is not offered), an access token with `XOAUTH2`; no sign-in without a `username`. `Insecure` before anything is sent for plain text to a host that is not loopback; `Invalid` for a user name without credentials, an empty host, a bad `EHLO` name or an extra root that is not a certificate.
 - `SmtpSender::with_timeouts(command, data)`: connect, handshake and each reply (default 60 s); the reply after the whole message (default 600 s).
 - `SmtpSettings::from_json`, `SmtpSettings::port()`, `Security::{Tls, Starttls, Plain}`.
+- `probe(host, port, security, roots, timeout) -> Result<SmtpProbe, SendError>`: checks a submission server before sign-in: connects, verifies TLS (after `STARTTLS` for `Starttls`), reads the greeting, says `EHLO` and `QUIT`; never a user name, secret or message. `SmtpProbe` holds the `AUTH` mechanisms after TLS (at most 32), `password_sign_in` (`PLAIN` or `LOGIN`), `oauth` (`XOAUTH2` or `OAUTHBEARER`) and the `SIZE` limit. The whole probe ends within `timeout` (`Timeout`); `Plain` and a server without `STARTTLS` are `Insecure`, a failed handshake or certificate `Tls`, a greeting other than 2xx `Unavailable`. Replies keep the caps below.
 
 ## Settings
 
@@ -21,9 +22,9 @@ The sending contract (`skein-send`) over SMTP submission (RFC 6409). `SmtpSender
 
 ## Behavior and limits
 
-- `STARTTLS` is required when configured: a server that does not offer it is `Unavailable`, and nothing, credentials included, is sent in plain text first. There is no setting that allows plain text to a remote host.
+- `STARTTLS` is required when configured: a server that does not offer it or refuses it is `Insecure`, data sent before the handshake is `Tls`, and nothing, credentials included, is sent in plain text first. There is no setting that allows plain text to a remote host.
 - `SIZE` is used and enforced before sending; `8BITMIME` and `SMTPUTF8` are required for 8-bit and internationalized mail and used when offered.
 - DSN (RFC 3461): when the envelope asks and the server offers `DSN`, `RET=FULL|HDRS` and `ENVID=` go on `MAIL FROM`, `NOTIFY=` and `ORCPT=rfc822;` (ASCII addresses) on each `RCPT TO`, all xtext-encoded. Without `DSN` the parameters are silently left out.
-- Mapping: refused connection, TLS failure or a non-2xx greeting is `Unavailable`; a session that breaks before the final dot is `Temporary`; silence or a lost connection after the final dot is `Uncertain`; `4xx`/`5xx` replies are `Refused` with their code (SMTP has no requested delay, so `retry_after()` is always `None`, `421` and `451` included); per-recipient refusals land in the report; `552` is `TooLarge`; `530`/`535` are `Auth`.
+- Mapping: a refused connection or a non-2xx greeting is `Unavailable`; a TLS failure is `Tls`; no answer in time before the final dot is `Timeout`; a session that breaks before the final dot is `Temporary`; silence or a lost connection after the final dot is `Uncertain`; `4xx`/`5xx` replies are `Refused` with their code (SMTP has no requested delay, so `retry_after()` is always `None`, `421` and `451` included); per-recipient refusals land in the report; `552` is `TooLarge`; `530`/`535` are `Auth`.
 - Dot-stuffing is done on the wire; the server receives the bytes unchanged.
 - Replies are read line by line, each line capped at 4096 bytes and a multi-line reply at 128 lines; the `smtp_replies` fuzz target in `skein/fuzz` reads arbitrary server bytes through the same code.
