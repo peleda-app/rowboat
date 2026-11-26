@@ -1,0 +1,25 @@
+[package]
+name = "skein-throttle"
+description = "An in-process gate per key: a cap on concurrent requests and a shared pause after a server asks to wait"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "docs/README.md"
+keywords = ["throttle", "rate-limit", "concurrency", "backoff", "skein"]
+categories = ["concurrency", "asynchronous"]
+
+[package.metadata.dojo]
+kind = "library"
+
+[dependencies]
+tokio = { workspace = true, features = ["sync", "time"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt", "sync", "time", "test-util"] }
+
+[lints]
+workspace = true

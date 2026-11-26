@@ -1,0 +1,27 @@
+[package]
+name = "baton-mesh-memory"
+description = "In-process mesh Transport for tests, with partitions and raw injection"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[package.metadata.dojo]
+kind = "implementation"
+implements = "baton-mesh"
+
+[dependencies]
+baton-core.workspace = true
+baton-identity.workspace = true
+baton-mesh.workspace = true
+async-trait.workspace = true
+bytes.workspace = true
+futures.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+baton-mesh = { workspace = true, features = ["testing"] }
+
+[lints]
+workspace = true

@@ -1,0 +1,81 @@
+[package]
+name = "skein"
+description = "The Skein binary: runs a node with its push receivers from a config file, and manages tenants, accounts, commands and webhooks"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+documentation = "https://peleda-app.github.io/rowboat"
+readme = "docs/README.md"
+keywords = ["email", "imap", "jmap", "calendar", "sync"]
+categories = ["email", "command-line-utilities"]
+publish = false
+
+[package.metadata.dojo]
+kind = "app"
+
+[features]
+default = []
+otel = ["skein-telemetry/otel"]
+
+[dependencies]
+baton-core.workspace = true
+baton-lease.workspace = true
+baton-lease-cas.workspace = true
+baton-signal.workspace = true
+baton-signal-local.workspace = true
+baton-state.workspace = true
+baton-state-memory.workspace = true
+skein-accounts.workspace = true
+skein-core.workspace = true
+skein-engine.workspace = true
+skein-keyring.workspace = true
+skein-keyring-local.workspace = true
+skein-mail.workspace = true
+skein-mail-gmail.workspace = true
+skein-mail-graph.workspace = true
+skein-mail-imap.workspace = true
+skein-mail-jmap.workspace = true
+skein-metrics.workspace = true
+skein-oauth.workspace = true
+skein-oauth-http.workspace = true
+skein-push.workspace = true
+skein-pim.workspace = true
+skein-pim-dav.workspace = true
+skein-pim-google.workspace = true
+skein-pim-graph.workspace = true
+skein-pim-jmap.workspace = true
+skein-send.workspace = true
+skein-send-gmail.workspace = true
+skein-send-graph.workspace = true
+skein-send-jmap.workspace = true
+skein-send-ses.workspace = true
+skein-send-smtp.workspace = true
+skein-server.workspace = true
+skein-storage.workspace = true
+skein-storage-fs.workspace = true
+skein-storage-memory.workspace = true
+skein-storage-s3.workspace = true
+skein-telemetry.workspace = true
+skein-throttle.workspace = true
+skein-webhooks.workspace = true
+anyhow.workspace = true
+axum.workspace = true
+base64.workspace = true
+bytes.workspace = true
+zstd.workspace = true
+clap.workspace = true
+getrandom.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["net", "signal", "macros", "rt-multi-thread"] }
+toml.workspace = true
+tracing.workspace = true
+ulid.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

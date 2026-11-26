@@ -1,0 +1,9 @@
+.git
+**/target
+**/node_modules
+**/*.local.md
+skein/tests/integration/.state
+skein/apps/docs/dist
+skein/apps/docs/.astro
+**/fuzz/work
+**/fuzz/artifacts

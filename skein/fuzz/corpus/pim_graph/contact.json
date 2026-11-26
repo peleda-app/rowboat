@@ -1,0 +1,1 @@
+{"@odata.etag": "W/\"ck2\"", "id": "ct1", "changeKey": "ck2", "givenName": "Bob", "emailAddresses": [{"address": "bob@example.org"}], "error": {"code": "ErrorItemNotFound"}}

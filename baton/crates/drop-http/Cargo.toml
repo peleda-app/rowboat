@@ -1,0 +1,33 @@
+[package]
+name = "baton-drop-http"
+description = "The drop service over HTTP/1.1: axum router and server with body, time, connection and per-IP limits"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[package.metadata.dojo]
+kind = "library"
+
+[dependencies]
+baton-drop.workspace = true
+axum.workspace = true
+bytes.workspace = true
+hyper.workspace = true
+hyper-util.workspace = true
+rustls.workspace = true
+tokio = { workspace = true, features = ["net"] }
+tokio-rustls.workspace = true
+tower.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+baton-core.workspace = true
+baton-mailbox.workspace = true
+proptest.workspace = true
+tokio = { workspace = true, features = ["net", "io-util"] }
+tracing-subscriber.workspace = true
+
+[lints]
+workspace = true

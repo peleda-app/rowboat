@@ -1,0 +1,61 @@
+[package]
+name = "batond"
+description = "The blind server: holds group logs, arbitrates leases, runs the drop service; no resource key, no capability"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[package.metadata.dojo]
+kind = "app"
+
+[lib]
+name = "batond"
+path = "src/lib.rs"
+
+[[bin]]
+name = "batond"
+path = "src/bin/batond.rs"
+
+[dependencies]
+baton-core.workspace = true
+baton-drop.workspace = true
+baton-drop-service.workspace = true
+baton-group.workspace = true
+baton-group-server.workspace = true
+baton-identity.workspace = true
+baton-lease.workspace = true
+baton-lease-cas.workspace = true
+baton-lease-server.workspace = true
+baton-link.workspace = true
+baton-link-iroh.workspace = true
+baton-state.workspace = true
+async-trait.workspace = true
+bytes.workspace = true
+data-encoding.workspace = true
+redb.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["net", "signal"] }
+toml.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+baton-keys.workspace = true
+postcard.workspace = true
+baton-lease = { workspace = true, features = ["testing"] }
+baton-link-memory.workspace = true
+baton-state = { workspace = true, features = ["testing"] }
+baton-state-memory.workspace = true
+baton-mailbox.workspace = true
+baton-mailbox-drop.workspace = true
+bytes.workspace = true
+proptest.workspace = true
+tempfile.workspace = true
+url.workspace = true
+
+[lints]
+workspace = true

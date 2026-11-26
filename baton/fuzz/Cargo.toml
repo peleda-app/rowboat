@@ -1,0 +1,137 @@
+[package]
+name = "baton-fuzz"
+version = "0.0.0"
+edition = "2024"
+license = "PolyForm-Noncommercial-1.0.0"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[package.metadata.dojo]
+kind = "fuzz"
+
+[dependencies]
+libfuzzer-sys = "0.4"
+baton-core = { path = "../crates/core" }
+baton-identity = { path = "../crates/identity" }
+baton-lease = { path = "../crates/lease" }
+baton-seal = { path = "../crates/seal" }
+baton-state = { path = "../crates/state" }
+baton-state-memory = { path = "../crates/state-memory" }
+baton-lease-cas = { path = "../crates/lease-cas" }
+baton-mesh = { path = "../crates/mesh" }
+baton-group = { path = "../crates/group" }
+baton-command = { path = "../crates/command" }
+baton-keys = { path = "../crates/keys" }
+baton-drop = { path = "../crates/drop" }
+baton-mailbox = { path = "../crates/mailbox" }
+baton-lease-server = { path = "../crates/lease-server" }
+baton-group-server = { path = "../crates/group-server" }
+tokio = { version = "1", features = ["rt", "time"] }
+bytes = "1"
+futures = { version = "0.3", features = ["executor"] }
+serde_json = "1"
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[workspace]
+
+[[bin]]
+name = "lease_record"
+path = "fuzz_targets/lease_record.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "roster"
+path = "fuzz_targets/roster.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "pairing"
+path = "fuzz_targets/pairing.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "seal_open"
+path = "fuzz_targets/seal_open.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "names"
+path = "fuzz_targets/names.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "store_records"
+path = "fuzz_targets/store_records.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "frame"
+path = "fuzz_targets/frame.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "group_entries"
+path = "fuzz_targets/group_entries.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "command"
+path = "fuzz_targets/command.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "drop_request"
+path = "fuzz_targets/drop_request.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "drop_record"
+path = "fuzz_targets/drop_record.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "lease_frame"
+path = "fuzz_targets/lease_frame.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "group_frame"
+path = "fuzz_targets/group_frame.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "keys_box"
+path = "fuzz_targets/keys_box.rs"
+test = false
+doc = false
+bench = false

@@ -1,0 +1,71 @@
+[tools]
+rust = "1.99"
+bun = "1.4.4"
+
+[tasks.check]
+description = "Everything CI runs on every push: both layers in one workspace, both fuzz workspaces, dojo"
+run = [
+  "bash scripts/check-unsafe.sh",
+  "cargo fmt --all --check",
+  "cargo fmt --check --manifest-path baton/fuzz/Cargo.toml",
+  "cargo fmt --check --manifest-path skein/fuzz/Cargo.toml",
+  "cargo check --manifest-path baton/fuzz/Cargo.toml --bins",
+  "cargo check --manifest-path skein/fuzz/Cargo.toml --bins",
+  "cargo clippy --workspace --all-targets -- -D warnings",
+  "cargo test --workspace",
+  "cargo clippy -p skein-telemetry --all-targets --features otel -- -D warnings",
+  "cargo test -p skein-telemetry --features otel",
+  "cargo run -q --manifest-path ../dojo/Cargo.toml -p dojo -- check .",
+]
+
+[tasks.dojo]
+description = "Workspace rules only"
+run = "cargo run -q --manifest-path ../dojo/Cargo.toml -p dojo -- check ."
+
+[tasks.deny]
+description = "Dependency review: advisories, bans, licenses, sources"
+run = "cargo deny check"
+
+[tasks.load-baton]
+description = "Baton load tests: `mise run load-baton -- [scenario]` (scenarios: `mise run load-baton -- list`)"
+run = "cargo run --release -p baton-load --"
+
+[tasks.load-skein]
+description = "Skein load tests: `mise run load-skein -- --scenario many|failover|slow|history ...`"
+run = "cargo run --release -p skein-load --"
+
+[tasks.load]
+description = "Both load suites with their default scenarios"
+run = [
+  "cargo run --release -p baton-load --",
+  "cargo run --release -p skein-load --",
+]
+
+[tasks.it]
+description = "Integration tests against servers in skein/tests/integration/compose.yaml"
+run = "bash skein/tests/integration/it.sh"
+
+[tasks.it-down]
+description = "Stop the integration stack and remove its volumes"
+run = "docker compose -f skein/tests/integration/compose.yaml down -v"
+
+[tasks.live]
+description = "Tests against real provider accounts; needs SKEIN_LIVE_* variables"
+run = "SKEIN_LIVE=1 cargo test -p skein-integration --test live -- --test-threads=1 --nocapture"
+
+[tasks.fuzz-baton]
+description = "Fuzz Baton: `mise run fuzz-baton -- all 60`, `<target> [secs]`, `build`, `list`, `replay <target> <file>`"
+run = "bash baton/fuzz/run.sh"
+
+[tasks.fuzz-skein]
+description = "Fuzz Skein: `mise run fuzz-skein -- all 60`, `<target> [secs]`, `build`, `list`, `replay <target> <file>`"
+run = "bash skein/fuzz/run.sh"
+
+[tasks.fuzz-all]
+description = "Fuzz every target of both layers: `mise run fuzz-all -- [secs per target]`, 60 by default"
+usage = 'arg "[secs]" default="60" help="Seconds per target"'
+run = ['bash baton/fuzz/run.sh all "$usage_secs"', 'bash skein/fuzz/run.sh all "$usage_secs"']
+
+[tasks.fuzz-build]
+description = "Build every fuzz target of both layers on the pinned nightly"
+run = ["bash baton/fuzz/run.sh build", "bash skein/fuzz/run.sh build"]

@@ -1,0 +1,7 @@
+event: state
+data: {"a":1}
+
+: comment
+data: x
+data: y
+

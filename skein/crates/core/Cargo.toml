@@ -1,0 +1,38 @@
+[package]
+name = "skein-core"
+description = "Ids, hashes, events and commands shared by every Skein module"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "docs/README.md"
+keywords = ["email", "journal", "sync", "skein"]
+categories = ["email", "data-structures"]
+
+[package.metadata.dojo]
+kind = "library"
+
+[features]
+testing = ["dep:rcgen", "dep:tokio", "dep:tokio-rustls"]
+
+[dependencies]
+baton-core.workspace = true
+blake3.workspace = true
+bytes.workspace = true
+rustls-pki-types.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+ulid.workspace = true
+rcgen = { workspace = true, optional = true }
+tokio = { workspace = true, optional = true, features = ["net", "io-util"] }
+tokio-rustls = { workspace = true, optional = true }
+
+[dev-dependencies]
+proptest.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

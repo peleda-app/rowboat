@@ -1,0 +1,40 @@
+[package]
+name = "skein-mail-gmail"
+description = "The mail contract on Gmail through the Gmail API: history change feeds, raw messages, label writes"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "docs/README.md"
+keywords = ["email", "gmail", "google", "skein"]
+categories = ["email", "api-bindings"]
+
+[package.metadata.dojo]
+kind = "implementation"
+implements = "skein-mail"
+
+[dependencies]
+skein-core.workspace = true
+skein-mail.workspace = true
+async-trait.workspace = true
+base64.workspace = true
+bytes.workspace = true
+futures.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["time", "sync"] }
+tracing.workspace = true
+url.workspace = true
+zstd.workspace = true
+
+[dev-dependencies]
+skein-mail = { workspace = true, features = ["testing"] }
+axum.workspace = true
+tokio = { workspace = true, features = ["net", "macros", "rt-multi-thread", "sync", "time", "test-util"] }
+
+[lints]
+workspace = true

@@ -1,0 +1,1 @@
+{"value": [{"id": "ev1", "changeKey": "ck1", "type": "seriesMaster", "isOrganizer": true, "attendees": [{"emailAddress": {"address": "Ada@Example.com"}}]}, {"id": "ev2", "@removed": {"reason": "deleted"}}], "@odata.nextLink": "https://graph.microsoft.com/v1.0/me/calendars/c1/events/delta?$skiptoken=x"}

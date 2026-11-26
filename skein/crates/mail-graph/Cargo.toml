@@ -1,0 +1,42 @@
+[package]
+name = "skein-mail-graph"
+description = "The mail contract on Microsoft 365 and Outlook.com through Microsoft Graph: delta change feeds, raw messages, writes"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "docs/README.md"
+keywords = ["email", "outlook", "microsoft-graph", "office365", "skein"]
+categories = ["email", "api-bindings"]
+
+[package.metadata.dojo]
+kind = "implementation"
+implements = "skein-mail"
+
+[dependencies]
+skein-core.workspace = true
+skein-mail.workspace = true
+async-trait.workspace = true
+base64.workspace = true
+bytes.workspace = true
+futures.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+skein-throttle.workspace = true
+tracing.workspace = true
+url.workspace = true
+zstd.workspace = true
+
+[dev-dependencies]
+skein-core = { workspace = true, features = ["testing"] }
+skein-mail = { workspace = true, features = ["testing"] }
+axum.workspace = true
+tokio = { workspace = true, features = ["net", "macros", "rt-multi-thread", "sync", "time"] }
+tracing-subscriber.workspace = true
+
+[lints]
+workspace = true

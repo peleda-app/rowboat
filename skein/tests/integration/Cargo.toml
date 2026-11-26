@@ -1,0 +1,48 @@
+[package]
+name = "skein-integration"
+description = "Integration tests against real servers in local containers, and live tests against real provider accounts"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+publish = false
+
+[package.metadata.dojo]
+kind = "test"
+
+[dependencies]
+skein-core.workspace = true
+skein-engine.workspace = true
+baton-core.workspace = true
+baton-lease.workspace = true
+baton-lease-cas.workspace = true
+baton-signal-local.workspace = true
+baton-state-memory.workspace = true
+skein-mail = { workspace = true, features = ["testing"] }
+bytes.workspace = true
+skein-storage.workspace = true
+skein-storage-memory.workspace = true
+skein-storage-s3.workspace = true
+tokio.workspace = true
+ulid.workspace = true
+
+[dev-dependencies]
+async-trait.workspace = true
+reqwest.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
+skein-mail-gmail.workspace = true
+skein-mail-graph.workspace = true
+skein-mail-imap.workspace = true
+skein-mail-jmap.workspace = true
+skein-send.workspace = true
+skein-send-smtp.workspace = true
+skein-send-jmap.workspace = true
+skein-pim.workspace = true
+skein-pim-dav.workspace = true
+skein-itip.workspace = true
+skein-pim-jmap.workspace = true
+
+[lints]
+workspace = true

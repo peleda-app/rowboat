@@ -1,0 +1,10 @@
+[repo]
+name = "rowboat"
+
+[checks]
+fuzz = true
+
+[[allow]]
+check = "TEST-FUZZ"
+path = "fuzz"
+reason = "each layer keeps its own cargo-fuzz workspace with its pinned nightly and corpora: baton/fuzz and skein/fuzz, each driven by its own run.sh, compiled on stable by mise run check and run by .github/workflows/fuzz.yml"

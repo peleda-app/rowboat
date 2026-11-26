@@ -1,0 +1,76 @@
+# Example configuration for `skein serve`. Secrets never go into this file: every secret is read
+# from the environment variable named by a `*_env` key.
+
+[node]
+id = "node-1"          # unique per node: [a-z0-9_-]
+weight = 1             # relative share of accounts; 0 = never fetch, only receive push
+always_on = true       # false: gets accounts only while no always-on node is alive
+
+# One of: memory (tests only), fs (one machine), s3 (shared, stateless nodes).
+[storage]
+kind = "s3"
+endpoint = "https://s3.example.org"   # omit for AWS S3
+bucket = "skein"
+region = "us-east-1"
+prefix = "prod"
+access_key_id_env = "SKEIN_S3_ACCESS_KEY_ID"
+secret_access_key_env = "SKEIN_S3_SECRET_ACCESS_KEY"
+# allow_http = true                   # only honoured for loopback endpoints
+
+[keyring]
+master_key_file = "/data/master.key"  # created with mode 0600 when missing; back it up separately
+cache_ttl_secs = 60
+
+# The only inbound HTTP: provider push and GET /v1/health. Manage the node with `skein tenant`,
+# `skein account`, `skein journal` and `skein webhook`; there is no management API.
+[server]
+enabled = true
+listen = "0.0.0.0:8080"
+public_url = "https://skein.example.com"   # where Gmail and Graph push reach this node
+push_rate_per_second = 100                 # per receiver; Gmail counts only after its secret
+
+[server.push]
+enabled = true                             # subscribe Gmail and Graph accounts to push (needs public_url)
+# gmail_topic = "projects/my-project/topics/skein-gmail"
+# gmail_token_env = "SKEIN_GMAIL_PUSH_TOKEN"   # secret in the Pub/Sub push URL {public_url}/v1/push/gmail/{secret}; `skein push-token` makes one
+# gmail_oidc_audience = "https://skein.example.com/v1/push/gmail"   # also require Pub/Sub's signed OIDC token
+# gmail_oidc_email = "push@my-project.iam.gserviceaccount.com"
+
+[webhooks]
+allow_http_loopback = false                # loopback receivers only for tests
+allowed_networks = []                      # private networks receivers may live in, e.g. "10.20.0.0/16"
+timeout_secs = 10
+
+[engine]
+enabled = true
+ownership = "storage"   # "single" for one node; "storage" coordinates nodes through the storage
+heartbeat_secs = 10      # the same on every node sharing the storage
+interval_secs = 300     # sync interval for providers without push
+snapshot_every_events = 5000   # new snapshot of an account after this many events
+retain_days = 7         # events covered by a snapshot older than this are compacted away
+send_undo_secs = 0      # hold every send this long after it was submitted, so it can be cancelled (at most 3600)
+
+[metrics]
+# listen = "127.0.0.1:9464"   # Prometheus text at /metrics, no authentication: loopback only
+
+[telemetry]
+filter = "info"
+json = true
+# otlp_endpoint = "http://otel-collector:4317"   # needs a build with the `otel` feature
+# otlp_metrics = true                # also export the counters over OTLP; needs otlp_endpoint
+# otlp_metrics_interval_secs = 60    # time between exports, at least 10
+
+# [[oauth.clients]]
+# name = "google"
+# provider = "google"
+# client_id = "1234.apps.googleusercontent.com"
+# client_secret_env = "SKEIN_GOOGLE_CLIENT_SECRET"
+# access = { mail = "api", mail_write = true, send = true }
+#
+# [[oauth.clients]]
+# name = "microsoft"
+# provider = "microsoft"
+# client_id = "00000000-0000-0000-0000-000000000000"
+# client_secret_env = "SKEIN_MICROSOFT_CLIENT_SECRET"
+# microsoft_tenant = "organizations"
+# access = { mail = "api", mail_write = true, calendar = "read", contacts = "read" }

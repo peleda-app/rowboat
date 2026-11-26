@@ -1,0 +1,28 @@
+[package]
+name = "baton-mailbox-memory"
+description = "In-process Mailbox over the drop service with its memory store, for tests and single-process setups"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[package.metadata.dojo]
+kind = "implementation"
+implements = "baton-mailbox"
+
+[dependencies]
+baton-drop.workspace = true
+baton-identity.workspace = true
+baton-mailbox.workspace = true
+async-trait.workspace = true
+bytes.workspace = true
+
+[dev-dependencies]
+baton-core.workspace = true
+baton-mailbox = { workspace = true, features = ["testing"] }
+tokio.workspace = true
+zeroize.workspace = true
+
+[lints]
+workspace = true

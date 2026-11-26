@@ -1,0 +1,9 @@
+#![no_main]
+
+use libfuzzer_sys::fuzz_target;
+use skein_mail_gmail::fuzzing;
+
+fuzz_target!(|data: &[u8]| {
+    fuzzing::page(data);
+    fuzzing::cursor(data);
+});

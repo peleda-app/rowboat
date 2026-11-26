@@ -1,0 +1,45 @@
+name: Live providers
+
+# Runs the live suite against real test accounts. Configure the secrets of the `live`
+# environment as described in skein/docs/LIVE.md; suites whose secrets are missing skip themselves.
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '17 4 * * *'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: live-providers
+  cancel-in-progress: false
+
+jobs:
+  live:
+    runs-on: ubuntu-latest
+    environment: live
+    timeout-minutes: 30
+    env:
+      SKEIN_LIVE_IMAP_HOST: ${{ secrets.SKEIN_LIVE_IMAP_HOST }}
+      SKEIN_LIVE_IMAP_PORT: ${{ secrets.SKEIN_LIVE_IMAP_PORT }}
+      SKEIN_LIVE_IMAP_USER: ${{ secrets.SKEIN_LIVE_IMAP_USER }}
+      SKEIN_LIVE_IMAP_PASSWORD: ${{ secrets.SKEIN_LIVE_IMAP_PASSWORD }}
+      SKEIN_LIVE_IMAP_MAILBOX: ${{ secrets.SKEIN_LIVE_IMAP_MAILBOX }}
+      SKEIN_LIVE_GMAIL_CLIENT_ID: ${{ secrets.SKEIN_LIVE_GMAIL_CLIENT_ID }}
+      SKEIN_LIVE_GMAIL_CLIENT_SECRET: ${{ secrets.SKEIN_LIVE_GMAIL_CLIENT_SECRET }}
+      SKEIN_LIVE_GMAIL_REFRESH_TOKEN: ${{ secrets.SKEIN_LIVE_GMAIL_REFRESH_TOKEN }}
+      SKEIN_LIVE_GRAPH_TENANT: ${{ secrets.SKEIN_LIVE_GRAPH_TENANT }}
+      SKEIN_LIVE_GRAPH_CLIENT_ID: ${{ secrets.SKEIN_LIVE_GRAPH_CLIENT_ID }}
+      SKEIN_LIVE_GRAPH_CLIENT_SECRET: ${{ secrets.SKEIN_LIVE_GRAPH_CLIENT_SECRET }}
+      SKEIN_LIVE_GRAPH_REFRESH_TOKEN: ${{ secrets.SKEIN_LIVE_GRAPH_REFRESH_TOKEN }}
+      SKEIN_LIVE_CALDAV_URL: ${{ secrets.SKEIN_LIVE_CALDAV_URL }}
+      SKEIN_LIVE_CALDAV_USER: ${{ secrets.SKEIN_LIVE_CALDAV_USER }}
+      SKEIN_LIVE_CALDAV_PASSWORD: ${{ secrets.SKEIN_LIVE_CALDAV_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: jdx/mise-action@v2
+      - uses: Swatinem/rust-cache@v2
+      - run: mise run live

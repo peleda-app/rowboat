@@ -1,0 +1,25 @@
+[package]
+name = "baton-seal"
+description = "Versioned XChaCha20-Poly1305 envelopes with purpose-bound HKDF subkeys"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[package.metadata.dojo]
+kind = "library"
+
+[dependencies]
+chacha20poly1305.workspace = true
+getrandom.workspace = true
+hkdf.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+
+[lints]
+workspace = true

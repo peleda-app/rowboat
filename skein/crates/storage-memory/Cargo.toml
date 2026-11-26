@@ -1,0 +1,33 @@
+[package]
+name = "skein-storage-memory"
+description = "Skein object storage in memory, for tests and single-process use"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "docs/README.md"
+keywords = ["storage", "in-memory", "testing", "skein"]
+categories = ["database", "development-tools::testing"]
+
+[package.metadata.dojo]
+kind = "implementation"
+implements = "skein-storage"
+
+[dependencies]
+skein-storage.workspace = true
+async-trait.workspace = true
+bytes.workspace = true
+
+[dev-dependencies]
+baton-core.workspace = true
+baton-lease = { workspace = true, features = ["testing"] }
+baton-lease-cas.workspace = true
+baton-state.workspace = true
+skein-storage = { workspace = true, features = ["testing"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+
+[lints]
+workspace = true

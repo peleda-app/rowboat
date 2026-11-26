@@ -1,0 +1,12 @@
+{
+  "kind": "calendar#event",
+  "id": "seedexchange01",
+  "iCalUID": "seedexchange01@example.com",
+  "status": "confirmed",
+  "summary": "Seed exchange",
+  "start": {"dateTime": "2026-12-07T12:00:00-05:00", "timeZone": "America/Example"},
+  "end": {"dateTime": "2026-12-07T13:00:00-05:00", "timeZone": "America/Example"},
+  "recurrence": ["RRULE:FREQ=WEEKLY;COUNT=4"],
+  "organizer": {"email": "pat@example.com", "displayName": "Pat Doe"},
+  "attendees": [{"email": "sam@example.org", "responseStatus": "accepted"}]
+}

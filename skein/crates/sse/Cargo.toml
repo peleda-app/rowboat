@@ -1,0 +1,21 @@
+[package]
+name = "skein-sse"
+description = "Parsing Server-Sent Events streams with a size limit"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "docs/README.md"
+keywords = ["sse", "server-sent-events", "eventsource", "parser"]
+categories = ["web-programming", "parser-implementations"]
+
+[package.metadata.dojo]
+kind = "library"
+
+[dependencies]
+
+[lints]
+workspace = true

@@ -1,0 +1,86 @@
+name: skein-it
+
+services:
+  rustfs:
+    image: rustfs/rustfs:1.0.6
+    environment:
+      RUSTFS_ACCESS_KEY: skein-it
+      RUSTFS_SECRET_KEY: skein-it-secret
+    ports:
+      - '127.0.0.1:49100:9000'
+
+  versity:
+    image: versity/versitygw:v1.11.0
+    command: ['posix', '/data']
+    environment:
+      ROOT_ACCESS_KEY: skein-it
+      ROOT_SECRET_KEY: skein-it-secret
+    tmpfs:
+      - /data
+    ports:
+      - '127.0.0.1:49101:7070'
+
+  greenmail:
+    image: greenmail/standalone:2.1.14
+    environment:
+      GREENMAIL_OPTS: '-Dgreenmail.setup.test.imap -Dgreenmail.setup.test.smtp -Dgreenmail.hostname=0.0.0.0 -Dgreenmail.users=ada:it-password@example.com -Dgreenmail.verbose=false'
+    ports:
+      - '127.0.0.1:49143:3143'
+      - '127.0.0.1:49025:3025'
+
+  dovecot:
+    image: dovecot/dovecot:2.4.5
+    environment:
+      USER_PASSWORD: '{PLAIN}it-password'
+    volumes:
+      - ./seed/dovecot/skein.conf:/etc/dovecot/conf.d/skein.conf:ro
+    ports:
+      - '127.0.0.1:49243:31143'
+
+  stalwart-seed:
+    image: stalwartlabs/stalwart:v0.16.27-alpine
+    entrypoint: ['/bin/sh', '/seed/seed.sh']
+    environment:
+      STALWART_RECOVERY_ADMIN: 'admin:it-stalwart-admin-password'
+      SKEIN_IT_PASSWORD: 'it-stalwart-password'
+    volumes:
+      - ./seed/stalwart:/seed:ro
+      - ./seed/stalwart/config.json:/etc/stalwart/config.json:ro
+      - stalwart-data:/var/lib/stalwart
+
+  stalwart:
+    image: stalwartlabs/stalwart:v0.16.27-alpine
+    depends_on:
+      stalwart-seed:
+        condition: service_completed_successfully
+    environment:
+      STALWART_RECOVERY_ADMIN: 'admin:it-stalwart-admin-password'
+      STALWART_PUBLIC_URL: 'http://127.0.0.1:49280'
+    volumes:
+      - ./seed/stalwart/config.json:/etc/stalwart/config.json:ro
+      - stalwart-data:/var/lib/stalwart
+    healthcheck:
+      test: ['CMD', 'curl', '-fs', '-o', '/dev/null', 'http://127.0.0.1:8080/healthz/live']
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      start_period: 5s
+    ports:
+      - '127.0.0.1:49280:8080'
+      - '127.0.0.1:49244:143'
+
+  radicale:
+    image: tomsquest/docker-radicale:3.8.3.0
+    volumes:
+      - ./seed/radicale/config:/config/config:ro
+      - ./seed/radicale/users:/config/users:ro
+    healthcheck:
+      test: ['CMD', 'curl', '-fs', '-o', '/dev/null', 'http://127.0.0.1:5232/.web/']
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    ports:
+      - '127.0.0.1:49232:5232'
+
+volumes:
+  stalwart-data:

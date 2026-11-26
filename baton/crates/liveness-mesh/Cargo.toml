@@ -1,0 +1,36 @@
+[package]
+name = "baton-liveness-mesh"
+description = "baton-lease Liveness by heartbeat gossip over the mesh, judged on the observer's clock"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[package.metadata.dojo]
+kind = "implementation"
+implements = "baton-lease"
+
+[dependencies]
+baton-core.workspace = true
+baton-lease.workspace = true
+baton-mesh.workspace = true
+baton-identity.workspace = true
+getrandom.workspace = true
+async-trait.workspace = true
+bytes.workspace = true
+futures.workspace = true
+postcard.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+baton-lease = { workspace = true, features = ["testing"] }
+baton-mesh-memory.workspace = true
+baton-lease-cas.workspace = true
+baton-state.workspace = true
+baton-state-memory.workspace = true
+
+[lints]
+workspace = true

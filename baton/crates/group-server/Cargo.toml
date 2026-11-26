@@ -1,0 +1,36 @@
+[package]
+name = "baton-group-server"
+description = "Holds group logs on a server node and serves them over a link: members fetch entries and push new signed ones"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[package.metadata.dojo]
+kind = "library"
+
+[dependencies]
+baton-core.workspace = true
+baton-group.workspace = true
+baton-link.workspace = true
+baton-state.workspace = true
+futures.workspace = true
+postcard.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["io-util"] }
+
+[dev-dependencies]
+async-trait.workspace = true
+bytes.workspace = true
+baton-identity.workspace = true
+baton-keys.workspace = true
+baton-lease.workspace = true
+baton-link-memory.workspace = true
+baton-state-memory.workspace = true
+proptest.workspace = true
+tokio = { workspace = true, features = ["io-util", "test-util"] }
+
+[lints]
+workspace = true

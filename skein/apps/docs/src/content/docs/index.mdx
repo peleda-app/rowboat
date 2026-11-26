@@ -1,0 +1,31 @@
+---
+title: Skein
+description: Mail, calendar and contacts providers turned into an append-only journal with the original bytes of every object, and write commands placed next to it.
+template: splash
+hero:
+  tagline: Skein connects to mail, calendar and contacts providers, turns every change into an append-only journal with the original bytes of every object, and carries out write commands placed next to that journal.
+  actions:
+    - text: Getting started
+      link: /rowboat/start/
+      icon: right-arrow
+    - text: Concepts
+      link: /rowboat/concepts/
+      variant: minimal
+---
+
+import { Card, CardGrid } from '@astrojs/starlight/components'
+
+<CardGrid>
+  <Card title="The journal is the truth" icon="list-format">
+    Every change becomes a numbered event in a per-account log. Content (RFC 5322 messages, iCalendar, vCard, provider JSON) is stored once as a blob addressed by its BLAKE3 hash.
+  </Card>
+  <Card title="Dumb core" icon="approve-check">
+    Skein does not index, thread or merge. It reports what happened, does what it is told, and says honestly when a write failed, conflicted or has an unknown outcome.
+  </Card>
+  <Card title="Stateless instances" icon="laptop">
+    Accounts, sealed credentials, cursors and ownership live in object storage with compare-and-swap. Any node can be killed at any time.
+  </Card>
+  <Card title="Extension points" icon="puzzle">
+    Storage, leases and signals (from Baton, the coordination library Skein uses) and every provider are contracts with conformance suites, so implementations can live outside this repository.
+  </Card>
+</CardGrid>

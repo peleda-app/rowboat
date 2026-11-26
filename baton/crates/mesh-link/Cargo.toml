@@ -1,0 +1,38 @@
+[package]
+name = "baton-mesh-link"
+description = "baton-mesh Transport over any baton-link Link, keeping signed frames and roster checks"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[package.metadata.dojo]
+kind = "implementation"
+implements = "baton-mesh"
+
+[dependencies]
+baton-link.workspace = true
+baton-identity.workspace = true
+baton-mesh.workspace = true
+baton-core.workspace = true
+async-trait.workspace = true
+bytes.workspace = true
+futures.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["io-util"] }
+
+[dev-dependencies]
+baton-lease = { workspace = true, features = ["testing"] }
+baton-lease-quorum.workspace = true
+baton-link-iroh.workspace = true
+baton-link-memory.workspace = true
+baton-liveness-mesh.workspace = true
+baton-mesh = { workspace = true, features = ["testing"] }
+baton-signal.workspace = true
+baton-signal-local.workspace = true
+baton-signal-mesh.workspace = true
+baton-state-memory.workspace = true
+
+[lints]
+workspace = true

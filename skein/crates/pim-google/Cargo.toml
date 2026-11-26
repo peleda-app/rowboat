@@ -1,0 +1,38 @@
+[package]
+name = "skein-pim-google"
+description = "Calendars and contacts on Google Calendar API v3 and People API v1: sync tokens, original JSON resources, conditional writes"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "docs/README.md"
+keywords = ["google-calendar", "contacts", "calendar", "google", "skein"]
+categories = ["email", "date-and-time", "api-bindings"]
+
+[package.metadata.dojo]
+kind = "implementation"
+implements = "skein-pim"
+
+[dependencies]
+skein-core.workspace = true
+skein-pim.workspace = true
+async-trait.workspace = true
+bytes.workspace = true
+futures.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json = { workspace = true, features = ["raw_value"] }
+tokio = { workspace = true, features = ["time", "sync"] }
+tracing.workspace = true
+url.workspace = true
+
+[dev-dependencies]
+skein-pim = { workspace = true, features = ["testing"] }
+axum.workspace = true
+tokio = { workspace = true, features = ["net", "macros", "rt-multi-thread", "sync", "time", "test-util"] }
+
+[lints]
+workspace = true

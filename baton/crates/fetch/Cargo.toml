@@ -1,0 +1,30 @@
+[package]
+name = "baton-fetch"
+description = "Objects by content hash: served to authorized peers over a link, fetched from peers before the application's source"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[package.metadata.dojo]
+kind = "library"
+
+[dependencies]
+baton-core.workspace = true
+baton-identity.workspace = true
+baton-link.workspace = true
+async-trait.workspace = true
+blake3.workspace = true
+bytes.workspace = true
+futures.workspace = true
+postcard.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["io-util"] }
+
+[dev-dependencies]
+baton-link-memory.workspace = true
+
+[lints]
+workspace = true

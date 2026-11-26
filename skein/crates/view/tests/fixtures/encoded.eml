@@ -1,0 +1,9 @@
+From: =?UTF-8?B?SsO8cmdlbiBCZWlzcGllbA==?= <juergen@example.com>
+To: pat@example.com
+Subject: =?UTF-8?B?R3LDvMOfZSBhdXMgS8O2bG4=?=
+Date: Wed, 4 Nov 2026 08:30:00 +0100
+Message-ID: <encoded@example.com>
+MIME-Version: 1.0
+Content-Type: text/html; charset=utf-8
+
+<html><body><h1>Hallo</h1><p>Viele Gr&uuml;&szlig;e vom Rhein.</p><script>alert(1)</script></body></html>

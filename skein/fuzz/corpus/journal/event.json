@@ -1,0 +1,1 @@
+{"v": 1, "seq": 2, "at": 1767225600001, "account": "a1", "key": "k2", "origin": "cmd1", "body": {"type": "message_added", "mailbox": "INBOX", "item": {"id": "1:7", "uid": 7}, "blob": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "size": 120, "flags": ["\\Seen"], "received_at": 1767225500000}}

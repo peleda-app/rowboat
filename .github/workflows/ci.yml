@@ -1,0 +1,96 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: mise run check
+    runs-on: ubuntu-latest
+    env:
+      MISE_TRUSTED_CONFIG_PATHS: ${{ github.workspace }}
+    defaults:
+      run:
+        working-directory: rowboat
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          path: rowboat
+          persist-credentials: false
+      - uses: actions/checkout@v5
+        with:
+          repository: peleda-app/dojo
+          path: dojo
+          persist-credentials: false
+      - uses: jdx/mise-action@v2
+        with:
+          working_directory: rowboat
+      - run: rustup component add rustfmt clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            rowboat -> target
+            rowboat/baton/fuzz -> target
+            rowboat/skein/fuzz -> target
+            dojo -> target
+      - run: mise run check
+
+  integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: jdx/mise-action@v2
+      - uses: Swatinem/rust-cache@v2
+      - run: mise run it
+      - if: always()
+        run: mise run it-down
+
+  load:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: jdx/mise-action@v2
+      - uses: Swatinem/rust-cache@v2
+      - name: Load scenario (10 people, 2000 messages each, 20 rounds of new mail)
+        run: |
+          cargo run --release -q -p skein-load -- --accounts 10 --history 2000 --per-round 15 --rounds 20 --flag-changes 5 --size 20000 | tee load.txt
+          { echo '```'; cat load.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: skein/Dockerfile
+          push: false
+          tags: rowboat:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  dependencies:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check advisories bans licenses sources

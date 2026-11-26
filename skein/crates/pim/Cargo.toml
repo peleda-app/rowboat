@@ -1,0 +1,32 @@
+[package]
+name = "skein-pim"
+description = "The calendar and contacts provider contract: collections, a change feed per collection, original objects, conditional writes"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "docs/README.md"
+keywords = ["calendar", "contacts", "pim", "skein"]
+categories = ["email", "date-and-time"]
+
+[package.metadata.dojo]
+kind = "contract"
+
+[features]
+testing = ["dep:skein-itip"]
+
+[dependencies]
+skein-core.workspace = true
+skein-itip = { workspace = true, optional = true }
+async-trait.workspace = true
+bytes.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true
+
+[lints]
+workspace = true

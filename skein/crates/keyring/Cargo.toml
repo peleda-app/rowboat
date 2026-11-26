@@ -1,0 +1,31 @@
+[package]
+name = "skein-keyring"
+description = "Contract for sealing secrets and content with per-tenant keys"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "docs/README.md"
+keywords = ["encryption", "secrets", "keyring", "skein"]
+categories = ["cryptography", "email"]
+
+[package.metadata.dojo]
+kind = "contract"
+
+[features]
+testing = ["dep:tokio"]
+
+[dependencies]
+skein-core.workspace = true
+async-trait.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, optional = true }
+
+[dev-dependencies]
+tokio.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,1 @@
+{"connections": [{"resourceName": "people/c123", "etag": "%EgU", "names": [{"displayName": "Bob"}]}, {"resourceName": "people/c9", "metadata": {"deleted": true}}], "responses": [{"person": {"resourceName": "people/c123", "etag": "e"}}], "nextSyncToken": "s2"}

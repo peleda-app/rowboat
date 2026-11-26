@@ -1,0 +1,4 @@
+target/
+node_modules/
+AGENTS.local.md
+CLAUDE.local.md

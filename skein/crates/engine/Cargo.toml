@@ -1,0 +1,55 @@
+[package]
+name = "skein-engine"
+description = "Turns provider changes into the journal and runs commands, under fenced leases"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "docs/README.md"
+keywords = ["email", "sync", "journal", "imap", "skein"]
+categories = ["email", "asynchronous"]
+
+[package.metadata.dojo]
+kind = "library"
+
+[dependencies]
+skein-core.workspace = true
+skein-storage.workspace = true
+baton-core.workspace = true
+baton-lease.workspace = true
+baton-signal.workspace = true
+skein-mail.workspace = true
+skein-metrics.workspace = true
+skein-push.workspace = true
+skein-send.workspace = true
+skein-pim.workspace = true
+skein-itip.workspace = true
+async-trait.workspace = true
+base64.workspace = true
+blake3.workspace = true
+bytes.workspace = true
+futures.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["sync", "time", "macros", "rt"] }
+tracing.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+skein-mail = { workspace = true, features = ["testing"] }
+skein-send = { workspace = true, features = ["testing"] }
+skein-pim = { workspace = true, features = ["testing"] }
+skein-storage = { workspace = true, features = ["testing"] }
+skein-storage-memory.workspace = true
+baton-lease-cas.workspace = true
+baton-signal-local.workspace = true
+baton-state.workspace = true
+baton-state-memory.workspace = true
+tokio.workspace = true
+
+[lints]
+workspace = true

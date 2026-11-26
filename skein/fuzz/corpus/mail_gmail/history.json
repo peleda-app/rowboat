@@ -1,0 +1,1 @@
+{"history": [{"id": "1001", "messagesAdded": [{"message": {"id": "18c2a1b3d4e5f601", "threadId": "t1", "labelIds": ["INBOX", "UNREAD"]}}], "labelsRemoved": [{"message": {"id": "18c2a1b3d4e5f602"}, "labelIds": ["UNREAD"]}], "messagesDeleted": [{"message": {"id": "bad id!"}}]}], "nextPageToken": "p2", "historyId": "1002"}

@@ -1,0 +1,80 @@
+name: Fuzz
+
+on:
+  schedule:
+    - cron: "17 3 * * 1"
+  workflow_dispatch:
+    inputs:
+      seconds:
+        description: Seconds per target
+        default: "300"
+  pull_request:
+    paths:
+      - "skein/fuzz/**"
+      - "skein/crates/core/**"
+      - "skein/crates/storage/**"
+      - "skein/crates/keyring/**"
+      - "skein/crates/keyring-local/**"
+      - "skein/crates/itip/**"
+      - "skein/crates/pim-dav/**"
+      - "skein/crates/pim-jmap/**"
+      - "skein/crates/pim-google/**"
+      - "skein/crates/pim-graph/**"
+      - "skein/crates/mail-imap/**"
+      - "skein/crates/mail-jmap/**"
+      - "skein/crates/mail-gmail/**"
+      - "skein/crates/mail-graph/**"
+      - "skein/crates/sse/**"
+      - "skein/crates/push/**"
+      - "skein/crates/oauth/**"
+      - "skein/crates/send-smtp/**"
+      - "skein/apps/skein/src/transfer.rs"
+      - "skein/crates/view/src/parse.rs"
+      - "skein/crates/view/src/threads.rs"
+      - "baton/crates/**"
+      - "baton/apps/**"
+      - "baton/fuzz/**"
+      - ".github/workflows/fuzz.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fuzz-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        layer: [baton, skein]
+    defaults:
+      run:
+        working-directory: ${{ matrix.layer }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - name: Install the pinned nightly
+        run: rustup toolchain install "$(sed -n 's/^channel *= *"\(.*\)"$/\1/p' fuzz/rust-toolchain.toml)" --profile minimal
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-fuzz
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ${{ matrix.layer }}/fuzz -> target
+      - name: fuzz-build
+        run: bash fuzz/run.sh build
+      - name: Fuzz every target
+        env:
+          SECONDS_PER_TARGET: ${{ github.event_name == 'pull_request' && '30' || inputs.seconds || '300' }}
+        run: bash fuzz/run.sh all "$SECONDS_PER_TARGET"
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-crashes-${{ matrix.layer }}
+          path: ${{ matrix.layer }}/fuzz/artifacts
+          if-no-files-found: ignore

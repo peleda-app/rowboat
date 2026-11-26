@@ -1,0 +1,21 @@
+[package]
+name = "skein-metrics"
+description = "Process-wide counters for Skein, rendered in the Prometheus text format"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "docs/README.md"
+keywords = ["metrics", "prometheus", "skein"]
+categories = ["development-tools::profiling"]
+
+[package.metadata.dojo]
+kind = "library"
+
+[dependencies]
+
+[lints]
+workspace = true

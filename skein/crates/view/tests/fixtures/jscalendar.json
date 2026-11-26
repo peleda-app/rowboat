@@ -1,0 +1,13 @@
+{
+  "@type": "Event",
+  "uid": "pruning-class@example.org",
+  "title": "Pruning class",
+  "start": "2026-12-10T09:00:00",
+  "timeZone": "Etc/UTC",
+  "duration": "PT2H",
+  "status": "confirmed",
+  "participants": {
+    "p1": {"@type": "Participant", "email": "lee@example.com", "roles": {"owner": true}},
+    "p2": {"@type": "Participant", "email": "sam@example.org", "roles": {"attendee": true}}
+  }
+}

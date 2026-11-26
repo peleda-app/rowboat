@@ -1,0 +1,33 @@
+[package]
+name = "baton-signal-mesh"
+description = "baton-signal spread over the mesh: a local backend plus fan-out to reachable members"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[package.metadata.dojo]
+kind = "implementation"
+implements = "baton-signal"
+
+[dependencies]
+baton-core.workspace = true
+baton-mesh.workspace = true
+baton-signal.workspace = true
+async-trait.workspace = true
+bytes.workspace = true
+futures.workspace = true
+postcard.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+baton-identity.workspace = true
+baton-mesh-memory.workspace = true
+baton-signal = { workspace = true, features = ["testing"] }
+baton-signal-local.workspace = true
+
+[lints]
+workspace = true

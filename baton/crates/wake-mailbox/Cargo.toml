@@ -1,0 +1,30 @@
+[package]
+name = "baton-wake-mailbox"
+description = "Wake over any Mailbox: a per-node wake box, long-polled"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[package.metadata.dojo]
+kind = "implementation"
+implements = "baton-wake"
+
+[dependencies]
+baton-identity.workspace = true
+baton-mailbox.workspace = true
+baton-wake.workspace = true
+async-trait.workspace = true
+bytes.workspace = true
+tokio.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+baton-core.workspace = true
+baton-drop.workspace = true
+baton-mailbox-memory.workspace = true
+baton-wake = { workspace = true, features = ["testing"] }
+
+[lints]
+workspace = true

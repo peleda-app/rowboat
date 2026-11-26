@@ -1,0 +1,36 @@
+[package]
+name = "baton-command"
+description = "Signed, sealed commands to a resource's leaseholder, their checks, results and delivery over the mesh"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[package.metadata.dojo]
+kind = "library"
+
+[dependencies]
+baton-core.workspace = true
+baton-group.workspace = true
+baton-identity.workspace = true
+baton-mesh.workspace = true
+baton-seal.workspace = true
+blake3.workspace = true
+bytes.workspace = true
+futures.workspace = true
+getrandom.workspace = true
+postcard.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+baton-keys.workspace = true
+baton-lease.workspace = true
+baton-mesh-memory.workspace = true
+proptest.workspace = true
+tokio.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,33 @@
+[package]
+name = "baton-mailbox"
+description = "Contract for store-and-forward mailboxes: sealed messages for nodes that are offline"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[package.metadata.dojo]
+kind = "contract"
+
+[features]
+testing = ["dep:tokio"]
+
+[dependencies]
+baton-core.workspace = true
+baton-identity.workspace = true
+async-trait.workspace = true
+blake3.workspace = true
+bytes.workspace = true
+data-encoding.workspace = true
+getrandom.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+zeroize.workspace = true
+tokio = { workspace = true, optional = true }
+
+[dev-dependencies]
+proptest.workspace = true
+
+[lints]
+workspace = true

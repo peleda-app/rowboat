@@ -1,0 +1,40 @@
+[package]
+name = "skein-pim-graph"
+description = "Calendars and contacts of Microsoft 365 and Outlook.com through Microsoft Graph: contact deltas, calendar listings, Graph JSON objects, conditional writes"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "docs/README.md"
+keywords = ["microsoft-graph", "calendar", "contacts", "outlook", "skein"]
+categories = ["email", "date-and-time", "api-bindings"]
+
+[package.metadata.dojo]
+kind = "implementation"
+implements = "skein-pim"
+
+[dependencies]
+skein-core.workspace = true
+skein-pim.workspace = true
+async-trait.workspace = true
+bytes.workspace = true
+futures.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+skein-throttle.workspace = true
+tokio = { workspace = true, features = ["time"] }
+tracing.workspace = true
+url.workspace = true
+zstd.workspace = true
+
+[dev-dependencies]
+skein-pim = { workspace = true, features = ["testing"] }
+axum.workspace = true
+tokio = { workspace = true, features = ["net", "macros", "rt-multi-thread", "sync", "time"] }
+
+[lints]
+workspace = true

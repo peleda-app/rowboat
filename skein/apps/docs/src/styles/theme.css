@@ -1,0 +1,38 @@
+:root {
+  --sl-font: 'Geist Variable', ui-sans-serif, system-ui, sans-serif;
+  --sl-font-mono: 'Geist Mono Variable', ui-monospace, 'SF Mono', Menlo, monospace;
+  --sl-content-width: 48rem;
+  --sl-line-height: 1.7;
+
+  --sl-color-accent-low: #10302a;
+  --sl-color-accent: #5fb3a1;
+  --sl-color-accent-high: #c3ece2;
+  --sl-color-white: #ededef;
+  --sl-color-gray-1: #dcdce0;
+  --sl-color-gray-2: #b4b4bb;
+  --sl-color-gray-3: #9a9aa2;
+  --sl-color-gray-4: #5d5d66;
+  --sl-color-gray-5: #2a2a2e;
+  --sl-color-gray-6: #18181b;
+  --sl-color-black: #0b0b0c;
+}
+
+:root[data-theme='light'] {
+  --sl-color-accent-low: #d4f0e9;
+  --sl-color-accent: #1f7a68;
+  --sl-color-accent-high: #0e3d33;
+  --sl-color-white: #0b0b0c;
+  --sl-color-gray-1: #18181b;
+  --sl-color-gray-2: #2a2a2e;
+  --sl-color-gray-3: #5d5d66;
+  --sl-color-gray-4: #9a9aa2;
+  --sl-color-gray-5: #dcdce0;
+  --sl-color-gray-6: #f2f2f4;
+  --sl-color-gray-7: #f8f8f9;
+  --sl-color-black: #ffffff;
+}
+
+.sl-markdown-content table {
+  display: table;
+  width: 100%;
+}

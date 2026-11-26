@@ -1,0 +1,30 @@
+From: Pat Doe <pat@example.com>
+To: Sam Roe <sam@example.org>
+Subject: Invitation: Plant swap
+Date: Tue, 3 Nov 2026 10:00:00 +0000
+Message-ID: <invite@example.com>
+MIME-Version: 1.0
+Content-Type: multipart/alternative; boundary="b1"
+
+--b1
+Content-Type: text/plain; charset=utf-8
+
+You are invited to the plant swap.
+--b1
+Content-Type: text/calendar; charset=utf-8; method=REQUEST
+
+BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//Example//Garden Calendar//EN
+METHOD:REQUEST
+BEGIN:VEVENT
+UID:plant-swap@example.com
+DTSTAMP:20261103T100000Z
+DTSTART:20261205T090000Z
+DTEND:20261205T103000Z
+SUMMARY:Plant swap
+ORGANIZER:mailto:pat@example.com
+ATTENDEE;RSVP=TRUE:mailto:sam@example.org
+END:VEVENT
+END:VCALENDAR
+--b1--

@@ -1,0 +1,43 @@
+[package]
+name = "skein-view"
+description = "A mail database over Skein's journal: envelopes, threads, search, calendars and contacts in SQLite, followed straight from storage"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "docs/README.md"
+keywords = ["email", "search", "sqlite", "threads", "skein"]
+categories = ["email", "database"]
+
+[package.metadata.dojo]
+kind = "library"
+
+[dependencies]
+skein-core.workspace = true
+skein-storage.workspace = true
+skein-itip.workspace = true
+baton-signal.workspace = true
+blake3.workspace = true
+bytes.workspace = true
+futures.workspace = true
+mail-parser.workspace = true
+rusqlite.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["sync", "time", "macros", "rt"] }
+tracing.workspace = true
+
+[dev-dependencies]
+baton-signal-local.workspace = true
+async-trait.workspace = true
+skein-storage-memory.workspace = true
+proptest.workspace = true
+tempfile.workspace = true
+tokio = { workspace = true, features = ["sync", "time", "macros", "rt-multi-thread"] }
+
+[lints]
+workspace = true

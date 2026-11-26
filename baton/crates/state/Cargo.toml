@@ -1,0 +1,28 @@
+[package]
+name = "baton-state"
+description = "Contract for the durable state Baton hands to the application: small records with compare-and-swap"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[package.metadata.dojo]
+kind = "contract"
+
+[features]
+testing = ["dep:tokio"]
+
+[dependencies]
+baton-core.workspace = true
+async-trait.workspace = true
+bytes.workspace = true
+thiserror.workspace = true
+zeroize.workspace = true
+tokio = { workspace = true, optional = true }
+
+[dev-dependencies]
+proptest.workspace = true
+
+[lints]
+workspace = true

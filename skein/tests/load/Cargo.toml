@@ -1,0 +1,34 @@
+[package]
+name = "skein-load"
+description = "Load tests: many accounts and messages through the engine, counting storage requests"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+publish = false
+
+[package.metadata.dojo]
+kind = "test"
+
+[dependencies]
+skein-core.workspace = true
+skein-engine.workspace = true
+baton-core.workspace = true
+baton-lease.workspace = true
+baton-lease-cas.workspace = true
+baton-signal.workspace = true
+baton-signal-local.workspace = true
+baton-state-memory.workspace = true
+skein-mail = { workspace = true, features = ["testing"] }
+skein-storage = { workspace = true, features = ["testing"] }
+skein-storage-memory.workspace = true
+skein-storage-fs.workspace = true
+async-trait.workspace = true
+bytes.workspace = true
+clap.workspace = true
+futures.workspace = true
+tokio.workspace = true
+
+[lints]
+workspace = true

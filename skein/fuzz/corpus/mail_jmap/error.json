@@ -1,0 +1,1 @@
+{"methodResponses": [["error", {"type": "cannotCalculateChanges"}, "0"], ["Email/query", {"ids": ["e1", "e2"], "queryState": "q1"}, "1"], ["Email/get", {"list": []}, "2"]]}

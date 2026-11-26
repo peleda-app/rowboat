@@ -1,0 +1,28 @@
+From: Pat Doe <pat@example.com>
+To: Sam Roe <sam@example.org>, Lee Moe <lee@example.org>
+Cc: team@example.com
+Subject: Seating plan
+Date: Tue, 3 Nov 2026 10:00:00 +0000
+Message-ID: <multi@example.com>
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="outer"
+
+--outer
+Content-Type: multipart/alternative; boundary="inner"
+
+--inner
+Content-Type: text/plain; charset=utf-8
+
+Please find the seating plan attached.
+--inner
+Content-Type: text/html; charset=utf-8
+
+<html><body><p>Please find the <b>seating plan</b> attached.</p></body></html>
+--inner--
+--outer
+Content-Type: application/pdf; name="seating.pdf"
+Content-Disposition: attachment; filename="seating.pdf"
+Content-Transfer-Encoding: base64
+
+JVBERi0xLjQgaW52ZW50ZWQgYXR0YWNobWVudCBieXRlcyBmb3IgdGVzdHMK
+--outer--

@@ -1,0 +1,9 @@
+{
+  "@type": "Card",
+  "version": "1.0",
+  "uid": "urn:uuid:contact-2",
+  "name": {"full": "Robin Sample"},
+  "emails": {"e1": {"address": "robin@example.org"}},
+  "phones": {"t1": {"number": "+1-555-0102"}},
+  "organizations": {"o1": {"name": "Allotment Club"}}
+}

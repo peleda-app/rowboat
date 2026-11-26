@@ -1,0 +1,192 @@
+[package]
+name = "skein-fuzz"
+version = "0.0.0"
+edition = "2024"
+license = "PolyForm-Noncommercial-1.0.0"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[package.metadata.dojo]
+kind = "fuzz"
+
+[dependencies]
+libfuzzer-sys = "0.4"
+arbitrary = { version = "1", features = ["derive"] }
+anyhow = "1"
+base64 = "0.23"
+bytes = "1"
+mail-parser = "1"
+rusqlite = { version = "0.43", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tempfile = "3"
+tokio = { version = "1", features = ["rt"] }
+zstd = "0.14"
+baton-core = { path = "../../baton/crates/core" }
+baton-state = { path = "../../baton/crates/state" }
+skein-core = { path = "../crates/core" }
+skein-itip = { path = "../crates/itip" }
+skein-keyring = { path = "../crates/keyring" }
+skein-keyring-local = { path = "../crates/keyring-local" }
+skein-mail-gmail = { path = "../crates/mail-gmail" }
+skein-mail-graph = { path = "../crates/mail-graph" }
+skein-mail-imap = { path = "../crates/mail-imap" }
+skein-mail-jmap = { path = "../crates/mail-jmap" }
+skein-oauth = { path = "../crates/oauth" }
+skein-pim-dav = { path = "../crates/pim-dav" }
+skein-pim-google = { path = "../crates/pim-google" }
+skein-pim-graph = { path = "../crates/pim-graph" }
+skein-pim-jmap = { path = "../crates/pim-jmap" }
+skein-push = { path = "../crates/push" }
+skein-send-smtp = { path = "../crates/send-smtp" }
+skein-sse = { path = "../crates/sse" }
+skein-storage = { path = "../crates/storage" }
+skein-storage-memory = { path = "../crates/storage-memory" }
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[profile.release]
+debug = 1
+
+[[bin]]
+name = "itip"
+path = "fuzz_targets/itip.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "imip"
+path = "fuzz_targets/imip.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "dav_xml"
+path = "fuzz_targets/dav_xml.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "mail_jmap"
+path = "fuzz_targets/mail_jmap.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "pim_jmap"
+path = "fuzz_targets/pim_jmap.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "mail_imap"
+path = "fuzz_targets/mail_imap.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "mail_gmail"
+path = "fuzz_targets/mail_gmail.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "mail_graph"
+path = "fuzz_targets/mail_graph.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "pim_google"
+path = "fuzz_targets/pim_google.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "pim_graph"
+path = "fuzz_targets/pim_graph.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "journal"
+path = "fuzz_targets/journal.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "export_import"
+path = "fuzz_targets/export_import.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "view_parse"
+path = "fuzz_targets/view_parse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "control_state"
+path = "fuzz_targets/control_state.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "journal_chain"
+path = "fuzz_targets/journal_chain.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "keyring_local"
+path = "fuzz_targets/keyring_local.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "sse"
+path = "fuzz_targets/sse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "push_notify"
+path = "fuzz_targets/push_notify.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "oauth_redirect"
+path = "fuzz_targets/oauth_redirect.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "smtp_replies"
+path = "fuzz_targets/smtp_replies.rs"
+test = false
+doc = false
+bench = false

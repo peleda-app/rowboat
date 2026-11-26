@@ -1,0 +1,32 @@
+[package]
+name = "skein-oauth-http"
+description = "The OAuth token endpoint over HTTPS"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "docs/README.md"
+keywords = ["oauth2", "pkce", "http", "token"]
+categories = ["authentication", "web-programming::http-client"]
+
+[package.metadata.dojo]
+kind = "implementation"
+implements = "skein-oauth"
+
+[dependencies]
+skein-core.workspace = true
+skein-oauth.workspace = true
+async-trait.workspace = true
+reqwest.workspace = true
+url.workspace = true
+
+[dev-dependencies]
+skein-core = { workspace = true, features = ["testing"] }
+skein-oauth = { workspace = true, features = ["testing"] }
+tokio = { workspace = true, features = ["net", "io-util", "macros", "rt-multi-thread"] }
+
+[lints]
+workspace = true

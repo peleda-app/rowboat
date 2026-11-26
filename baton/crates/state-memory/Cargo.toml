@@ -1,0 +1,26 @@
+[package]
+name = "baton-state-memory"
+description = "In-memory StateStore for tests and examples (not durable)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[package.metadata.dojo]
+kind = "implementation"
+implements = "baton-state"
+
+[dependencies]
+baton-core.workspace = true
+baton-state.workspace = true
+async-trait.workspace = true
+bytes.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+baton-state = { workspace = true, features = ["testing"] }
+tokio.workspace = true
+
+[lints]
+workspace = true

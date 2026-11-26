@@ -1,0 +1,1 @@
+{"v": 1, "account": "a1", "seq": 2, "at": 1767225600001, "mailboxes": {"INBOX": {"info": {"id": "INBOX", "path": "INBOX", "role": "inbox", "selectable": true, "label": false}, "items": {"1:7": {"item": {"id": "1:7", "uid": 7}, "blob": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "size": 120, "flags": ["\\Seen"]}}}}}

@@ -1,0 +1,1 @@
+{"@odata.context": "x", "value": [{"id": "AAMk1", "isRead": true, "isDraft": false, "flag": {"flagStatus": "flagged"}, "receivedDateTime": "2026-03-01T09:30:00Z"}, {"id": "AAMk2", "@removed": {"reason": "deleted"}}, {"id": "AAMk1", "isRead": false}], "@odata.deltaLink": "https://graph.microsoft.com/v1.0/me/mailFolders/inbox/messages/delta?$deltatoken=abc"}

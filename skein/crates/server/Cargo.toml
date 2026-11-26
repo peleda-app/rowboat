@@ -1,0 +1,48 @@
+[package]
+name = "skein-server"
+description = "The node's only inbound HTTP: Gmail Pub/Sub and Microsoft Graph push receivers and a health check"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "docs/README.md"
+keywords = ["push", "gmail", "microsoft-graph", "webhook", "skein"]
+categories = ["email", "web-programming::http-server"]
+
+[package.metadata.dojo]
+kind = "library"
+
+[dependencies]
+jsonwebtoken.workspace = true
+reqwest.workspace = true
+baton-signal.workspace = true
+skein-push.workspace = true
+axum.workspace = true
+blake3.workspace = true
+hyper.workspace = true
+hyper-util.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+subtle.workspace = true
+tokio = { workspace = true, features = ["net", "time"] }
+tower.workspace = true
+tower-http.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+async-trait.workspace = true
+base64.workspace = true
+bytes.workspace = true
+futures.workspace = true
+jsonwebtoken = { workspace = true, features = ["use_pem"] }
+baton-signal-local.workspace = true
+skein-core.workspace = true
+skein-storage.workspace = true
+skein-storage-memory.workspace = true
+tokio = { workspace = true, features = ["net", "test-util"] }
+
+[lints]
+workspace = true

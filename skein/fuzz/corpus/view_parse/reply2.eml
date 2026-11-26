@@ -1,0 +1,11 @@
+From: Sam Roe <sam@example.org>
+To: Pat Doe <pat@example.com>
+Subject: Re: Re: Lunch on Friday
+Date: Thu, 5 Nov 2026 13:00:00 +0000
+Message-ID: <reply2@example.com>
+In-Reply-To: <reply1@example.com>
+References: <root@example.com> <reply1@example.com>
+MIME-Version: 1.0
+Content-Type: text/plain; charset=utf-8
+
+See you there.

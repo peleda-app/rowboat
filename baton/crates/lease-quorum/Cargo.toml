@@ -1,0 +1,37 @@
+[package]
+name = "baton-lease-quorum"
+description = "baton-lease Leases decided by a majority of a group's members (CASPaxos), with durable acceptors"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[package.metadata.dojo]
+kind = "implementation"
+implements = "baton-lease"
+
+[dependencies]
+baton-core.workspace = true
+baton-identity.workspace = true
+baton-lease.workspace = true
+baton-mesh.workspace = true
+baton-state.workspace = true
+async-trait.workspace = true
+blake3.workspace = true
+bytes.workspace = true
+futures.workspace = true
+postcard.workspace = true
+rand_core = { workspace = true }
+serde.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+baton-lease = { workspace = true, features = ["testing"] }
+baton-liveness-mesh.workspace = true
+baton-mesh-memory.workspace = true
+baton-state-memory.workspace = true
+
+[lints]
+workspace = true

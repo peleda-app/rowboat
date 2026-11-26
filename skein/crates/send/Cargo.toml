@@ -1,0 +1,30 @@
+[package]
+name = "skein-send"
+description = "The sending contract: hand a prebuilt message with an explicit envelope to a sending service"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "docs/README.md"
+keywords = ["email", "send", "submission", "skein"]
+categories = ["email"]
+
+[package.metadata.dojo]
+kind = "contract"
+
+[features]
+testing = []
+
+[dependencies]
+skein-core.workspace = true
+async-trait.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true
+
+[lints]
+workspace = true

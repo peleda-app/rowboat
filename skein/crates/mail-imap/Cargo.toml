@@ -1,0 +1,41 @@
+[package]
+name = "skein-mail-imap"
+description = "The mail contract on IMAP servers: change feeds, raw messages, writes and IDLE watches"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "docs/README.md"
+keywords = ["email", "imap", "idle", "skein"]
+categories = ["email", "network-programming"]
+
+[package.metadata.dojo]
+kind = "implementation"
+implements = "skein-mail"
+
+[dependencies]
+skein-core.workspace = true
+skein-mail.workspace = true
+async-imap.workspace = true
+async-trait.workspace = true
+bytes.workspace = true
+futures.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["net", "time", "sync", "macros", "rt", "io-util"] }
+tokio-rustls.workspace = true
+tracing.workspace = true
+webpki-roots.workspace = true
+zstd.workspace = true
+
+[dev-dependencies]
+skein-core = { workspace = true, features = ["testing"] }
+skein-mail = { workspace = true, features = ["testing"] }
+base64.workspace = true
+tokio = { workspace = true, features = ["net", "io-util", "macros", "rt-multi-thread", "sync", "time"] }
+
+[lints]
+workspace = true

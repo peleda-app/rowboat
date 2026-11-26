@@ -1,0 +1,48 @@
+{
+  "using": ["urn:ietf:params:jmap:core", "urn:stalwart:jmap"],
+  "methodCalls": [
+    ["x:Domain/set", { "create": { "domain": { "name": "example.com" } } }, "domain"],
+    [
+      "x:NetworkListener/set",
+      {
+        "create": {
+          "imap": {
+            "name": "imap",
+            "bind": { "[::]:143": true },
+            "protocol": "imap",
+            "tlsImplicit": false
+          },
+          "http": {
+            "name": "http",
+            "bind": { "[::]:8080": true },
+            "protocol": "http",
+            "useTls": false
+          }
+        }
+      },
+      "listeners"
+    ],
+    ["x:Imap/set", { "update": { "singleton": { "allowPlainTextAuth": true } } }, "imap"],
+    [
+      "x:Security/set",
+      {
+        "update": {
+          "singleton": {
+            "abuseBanRate": null,
+            "authBanRate": null,
+            "loiterBanRate": null,
+            "scanBanRate": null
+          }
+        }
+      },
+      "security"
+    ],
+    [
+      "x:Http/set",
+      { "update": { "singleton": { "rateLimitAuthenticated": null, "rateLimitAnonymous": null } } },
+      "http"
+    ],
+    ["x:SpamPyzor/set", { "update": { "singleton": { "enable": false } } }, "pyzor"],
+    ["x:Application/get", { "properties": ["id", "enabled", "resourceUrl"] }, "applications"]
+  ]
+}

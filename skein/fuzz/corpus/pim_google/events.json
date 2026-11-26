@@ -1,0 +1,1 @@
+{"kind": "calendar#events", "items": [{"id": "skein0123abcd", "etag": "\"3311\"", "status": "confirmed", "summary": "Lunch", "attendees": [{"email": "ada@example.com", "self": true, "responseStatus": "needsAction"}, {"email": "bob@example.org"}]}, {"id": "gone1", "status": "cancelled"}], "nextSyncToken": "sync1"}

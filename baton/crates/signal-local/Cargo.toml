@@ -1,0 +1,26 @@
+[package]
+name = "baton-signal-local"
+description = "Signals within one process: broadcast channels, expiring values and counters"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[package.metadata.dojo]
+kind = "implementation"
+implements = "baton-signal"
+
+[dependencies]
+baton-core.workspace = true
+baton-signal.workspace = true
+async-trait.workspace = true
+bytes.workspace = true
+futures.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+baton-signal = { workspace = true, features = ["testing"] }
+
+[lints]
+workspace = true

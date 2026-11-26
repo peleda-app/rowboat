@@ -1,0 +1,25 @@
+[package]
+name = "baton-link-memory"
+description = "In-process implementation of baton-link for tests, with network partitions"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[package.metadata.dojo]
+kind = "implementation"
+implements = "baton-link"
+
+[dependencies]
+baton-link.workspace = true
+async-trait.workspace = true
+futures.workspace = true
+tokio = { workspace = true, features = ["io-util"] }
+
+[dev-dependencies]
+baton-link = { workspace = true, features = ["testing"] }
+baton-identity.workspace = true
+
+[lints]
+workspace = true

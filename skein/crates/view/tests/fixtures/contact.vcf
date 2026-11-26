@@ -1,0 +1,10 @@
+BEGIN:VCARD
+VERSION:4.0
+UID:urn:uuid:contact-1
+FN:Jordan Example
+N:Example;Jordan;;;
+item1.EMAIL;TYPE=work:Jordan@Example.com
+EMAIL;TYPE=home:j.example@example.org
+TEL;VALUE=uri;TYPE=cell:tel:+1-555-0100
+ORG:Greenhouse\; Inc.;Seeds
+END:VCARD

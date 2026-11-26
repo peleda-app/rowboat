@@ -1,0 +1,36 @@
+[package]
+name = "skein-send-gmail"
+description = "The sending contract on Gmail through the Gmail API messages.send"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "docs/README.md"
+keywords = ["email", "gmail", "send", "skein"]
+categories = ["email", "api-bindings"]
+
+[package.metadata.dojo]
+kind = "implementation"
+implements = "skein-send"
+
+[dependencies]
+skein-core.workspace = true
+skein-send.workspace = true
+async-trait.workspace = true
+base64.workspace = true
+mail-parser.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+url.workspace = true
+
+[dev-dependencies]
+skein-send = { workspace = true, features = ["testing"] }
+axum.workspace = true
+tokio = { workspace = true, features = ["net", "macros", "rt-multi-thread", "sync", "time"] }
+
+[lints]
+workspace = true

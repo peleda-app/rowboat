@@ -1,0 +1,26 @@
+[package]
+name = "baton-identity"
+description = "Node identity, the signed group roster and pairing for a Baton group"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[package.metadata.dojo]
+kind = "library"
+
+[dependencies]
+baton-core.workspace = true
+data-encoding.workspace = true
+ed25519-dalek.workspace = true
+hmac.workspace = true
+postcard.workspace = true
+rand_core.workspace = true
+serde.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+zeroize.workspace = true
+
+[lints]
+workspace = true

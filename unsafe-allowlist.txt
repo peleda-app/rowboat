@@ -1,0 +1,1 @@
+# Files that may allow unsafe code, one repository-relative path per line. rowboat has none.
