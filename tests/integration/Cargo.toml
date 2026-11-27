@@ -18,6 +18,7 @@ path = "src/bin/certs.rs"
 [dependencies]
 rowboat-api.workspace = true
 rowboat-node = { workspace = true, features = ["testing"] }
+rowboat-endpoint-iroh.workspace = true
 rowboat-keystore-memory.workspace = true
 rowboat-discover = { workspace = true, features = ["testing"] }
 rowboat-discover-autoconfig.workspace = true

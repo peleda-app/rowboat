@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Generates the test CA (once), brings up Skein's compose stack with the node's TLS layer over it,
+# Generates the test CA (once), brings up Skein's compose stack with the node's TLS layer and the
+# server's image (apps/rowboat, built here) over it,
 # runs Skein's integration suites and the node's (the node's even when Skein's fail), then takes
 # the stack down, its volumes and the test CA with it.
 # Usage: it.sh [extra cargo test args for both suites]
@@ -36,7 +37,7 @@ trap finish EXIT
 if [[ ! -f "$here/.certs/tls.key" ]]; then
   cargo run -q -p rowboat-integration --bin rowboat-it-certs -- "$here/.certs"
 fi
-"${compose[@]}" up -d --wait --remove-orphans
+"${compose[@]}" up -d --wait --build --remove-orphans
 
 # Stalwart creates its inbound SMTP throttles on the first normal start (five connections a
 # second per address), which would refuse the parallel tests; drop them and reload the settings.
@@ -64,7 +65,7 @@ SKEIN_IT_STACK=up bash skein/tests/integration/it.sh "$@" ${skein_args[@]+"${ske
 
 node=0
 ROWBOAT_IT=1 ROWBOAT_IT_CA="$here/.certs/ca.crt" \
-  cargo test -p rowboat-integration --test node "$@" ${node_args[@]+"${node_args[@]}"} || node=$?
+  cargo test -p rowboat-integration --no-fail-fast --test node --test server "$@" ${node_args[@]+"${node_args[@]}"} || node=$?
 
 [[ $skein -eq 0 ]] || echo "Skein's integration suites failed ($skein)" >&2
 [[ $node -eq 0 ]] || echo "the node's integration suite failed ($node)" >&2

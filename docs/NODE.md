@@ -1,6 +1,6 @@
 # rowboat-node, phases 0 and 1
 
-The implementation spec of the node layer for [PLAN.md](PLAN.md) phases 0 (foundation) and 1 (node on one device): the first node that reads and sends mail on a desktop, with IMAP and SMTP accounts signed in by password or app password. The app side of the same step is `../app/docs/DESKTOP.md` (the app's phase 2). OAuth for Gmail and Outlook, the group, handover, servers, push and aliases come in later phases and are only kept possible here.
+The implementation spec of the node layer for [PLAN.md](PLAN.md) phases 0 (foundation) and 1 (node on one device): the first node that reads and sends mail on a desktop, with IMAP and SMTP accounts signed in by password or app password. The app side of the same step is `../app/docs/DESKTOP.md` (the app's phase 2). OAuth for Gmail and Outlook, the group, handover, servers, push and aliases come in later phases and are only kept possible here. The group, pairing, replication, commands, handover and the server (phases 2 and 3) are specified in [GROUP.md](GROUP.md).
 
 Status: built on 2026-11-26, including (later the same day) Skein change 9 (the `probe` functions and the node's `ServerProber`), discovery from the domain's autoconfig file and DNS SRV records, typed causes in Skein's `MailError` and `SendError`, and re-parsing in the background on a parser version change. Not built: re-parsing on read (only the background rounds), the live suite (it needs the maintainer's accounts), and the moved `push` crate. The integration suite (`tests/integration`) was built later the same day. Where this document and the code disagree, the crates' `docs/README.md` win; the departures are listed in `docs/DECISIONS.md` (2026-11-26, node phases 0 and 1 built).
 
@@ -208,7 +208,7 @@ Lists are newest first with an opaque cursor (`(sort_date, id)` and, for scopes 
 | `set_read(targets, read)`, `set_flagged(targets, flagged)` | `set_flags` per mailbox the targets sit in | `mail-flags` |
 | `move_to(targets, mailbox)` | `move` per source mailbox; refuses a mailbox of another account | `mail-move` |
 | `archive(targets)` | a move to the account's archive mailbox (the `archive` role, else the one set with `update_account`; `NoArchive` otherwise); on Gmail, a move out of the inbox to All Mail | `mail-move` |
-| `delete(targets, permanent)` | `delete` with `to_trash` when the provider has a trash and `permanent` is false; `permanent` true deletes for good (the app asks first) | `mail-delete` |
+| `delete(targets, permanent)` | `delete` with `to_trash` when the provider has a trash and `permanent` is false; `permanent` true deletes for good (the app asks first) | `mail-delete`; `mail-delete-forever` when `permanent` |
 | `save_draft(draft)`, `list_drafts()`, `get_draft(id)`, `delete_draft(id)` | local drafts in the sealed objects (`drafts/{id}`, at most 200 drafts of at most 25 MiB each); not synced to the provider in phase 1 | `mail-draft` |
 | `send(draft)` | see "Sending" | `mail-send` |
 | `cancel_send(account, command)` | `skein_engine::cancel_command`; `AlreadyStarted` once the message may have left | `mail-send-cancel` |
@@ -219,7 +219,7 @@ Lists are newest first with an opaque cursor (`(sort_date, id)` and, for scopes 
 
 Targets are `MessageRef { account, message }`, at most 1,000 per call, all of one account for moves; the node resolves each to its memberships (mailbox and item) and queues one command per mailbox. A target the database does not know is skipped and reported in the result (`skipped`), never an error for the whole call. Every result that queued commands returns their ids, so the app can match `CommandSettled` events.
 
-`NodeError` (serializable, kinds only, no provider text, address, subject or path): `InvalidInput`, `NotFound`, `AccountExists`, `AuthFailed`, `ServerUnreachable`, `TlsFailed`, `InsecureRefused`, `ServerRefused`, `Throttled { retry_after_secs }`, `NoSender`, `NoArchive`, `NoTrash`, `QuotaFull`, `Unavailable`, `AlreadyStarted`, `Storage`, `KeysLost`, `Busy`, `Internal`. Mapping from Skein, by the typed cause (`MailError::cause()`, `SendError::cause()`), never by text: `Auth` is `AuthFailed`; `Tls` is `TlsFailed`; `Insecure` (plain text to a remote host, no STARTTLS) is `InsecureRefused`; `Network`, `Timeout`, `Unavailable` and `Temporary` are `ServerUnreachable`; `Quota` and `TooLarge` are `QuotaFull`; `Refused`, `Protocol`, `MailboxNotFound`, `RecipientsRefused` and `Uncertain` are `ServerRefused`; `Config` and `Invalid` are `InvalidInput`; `Throttled` keeps its wait.
+`NodeError` (serializable, kinds only, no provider text, address, subject or path): `InvalidInput`, `NotFound`, `AccountExists`, `AuthFailed`, `ServerUnreachable`, `TlsFailed`, `InsecureRefused`, `ServerRefused`, `Throttled { retry_after_secs }`, `NoSender`, `NoArchive`, `NoTrash`, `QuotaFull`, `Unavailable`, `AlreadyStarted`, `Storage`, `KeysLost`, `Busy`, `PairingCodeRejected`, `PairingExpired`, `PairingRefused`, `Forbidden`, `PeerUnreachable` (the group calls, GROUP.md), `Internal`. Mapping from Skein, by the typed cause (`MailError::cause()`, `SendError::cause()`), never by text: `Auth` is `AuthFailed`; `Tls` is `TlsFailed`; `Insecure` (plain text to a remote host, no STARTTLS) is `InsecureRefused`; `Network`, `Timeout`, `Unavailable` and `Temporary` are `ServerUnreachable`; `Quota` and `TooLarge` are `QuotaFull`; `Refused`, `Protocol`, `MailboxNotFound`, `RecipientsRefused` and `Uncertain` are `ServerRefused`; `Config` and `Invalid` are `InvalidInput`; `Throttled` keeps its wait.
 
 ### Removing an account
 
@@ -275,7 +275,7 @@ Sources: the `ViewObserver` (messages, mailboxes, outcomes, progress), the statu
 
 ## Baton in phase 1
 
-The node runs Baton's lease, liveness, signal and state contracts in process, with its own identity and a roster of one. No link, mesh or command bus runs. What phase 2 adds (pairing, replication, commands from other nodes) plugs in behind the same `NodeApi` and the reserved command classes; nothing in phase 1 may assume it is the only node beyond the lease it holds.
+The node runs Baton's lease, liveness, signal and state contracts in process, with its own identity and a roster of one (since phase 2, wave 1, a Baton group log of its own; GROUP.md). No link, mesh or command bus runs. What phase 2 adds (pairing, replication, commands from other nodes) plugs in behind the same `NodeApi` and the reserved command classes; nothing in phase 1 may assume it is the only node beyond the lease it holds. Phase 2 is specified in [GROUP.md](GROUP.md), including what devices do while the group's server is silent ("When the server is silent": a fallback arbiter among the devices after the takeover delay, `NodeBuilder::fallback`).
 
 ## Logging and privacy
 

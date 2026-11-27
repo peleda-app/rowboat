@@ -221,6 +221,7 @@ fn requests_round_trip_and_are_checked_on_decode() {
         CommandClass::Flags,
         CommandClass::Move,
         CommandClass::Delete,
+        CommandClass::DeleteForever,
         CommandClass::Draft,
         CommandClass::Send,
         CommandClass::SendCancel,

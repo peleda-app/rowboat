@@ -1,4 +1,4 @@
-/// Errors of identity, roster and pairing checks. None of them carries key material.
+/// Errors of identity, roster and PAKE checks. None of them carries key material.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum IdentityError {
     /// Bytes that are not a valid public key, signature or node id of a key.
@@ -32,13 +32,8 @@ pub enum IdentityError {
     /// A member that tries to remove itself; another member revokes it.
     #[error("a member cannot revoke itself")]
     SelfRevocation,
-    /// An invite that was never issued, was already used or was cancelled.
-    #[error("unknown or used invite")]
-    UnknownInvite,
-    /// An invite past its expiry.
-    #[error("invite expired")]
-    InviteExpired,
-    /// A join request whose proof of the invite secret does not verify.
-    #[error("bad invite proof")]
+    /// A PAKE key confirmation that does not verify: a wrong password, a swapped message or
+    /// another session.
+    #[error("bad proof")]
     BadProof,
 }

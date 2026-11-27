@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use skein_core::{
     CommandBody, Flags, ItemRef, MailCapabilities, MailboxInfo, MailboxRole, Timestamp,
 };
-use tokio::sync::Notify;
+use tokio::sync::{Notify, watch};
 
 use crate::{
     Changed, Cursor, MailChange, MailError, MailProvider, MailSession, MailWatch, MailboxChanges,
@@ -51,6 +51,7 @@ struct State {
     boxes: BTreeMap<String, Mbox>,
     fail_next: Option<MailError>,
     connects: u64,
+    waiting: u64,
     fetched: u64,
     next_validity: u32,
 }
@@ -63,6 +64,18 @@ struct State {
 pub struct FakeMail {
     state: Arc<Mutex<State>>,
     notify: Arc<Notify>,
+    holds: Arc<watch::Sender<usize>>,
+}
+
+/// Keeps new sessions of a [`FakeMail`] waiting until it is dropped.
+pub struct Hold {
+    holds: Arc<watch::Sender<usize>>,
+}
+
+impl Drop for Hold {
+    fn drop(&mut self) {
+        self.holds.send_modify(|n| *n -= 1);
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -89,6 +102,20 @@ impl FakeMail {
     /// Makes the next session call fail with `error`.
     pub fn fail_next(&self, error: MailError) {
         self.state.lock().unwrap().fail_next = Some(error);
+    }
+
+    /// Makes every new session wait in `connect` until the returned [`Hold`] (and every other
+    /// one) is dropped.
+    pub fn hold(&self) -> Hold {
+        self.holds.send_modify(|n| *n += 1);
+        Hold {
+            holds: self.holds.clone(),
+        }
+    }
+
+    /// How many sessions are waiting on a [`Hold`]; one whose `connect` is dropped stops counting.
+    pub fn waiting(&self) -> u64 {
+        self.state.lock().unwrap().waiting
     }
 
     /// How many sessions were opened.
@@ -220,6 +247,18 @@ impl ServerControl for FakeMail {
 #[async_trait]
 impl MailProvider for FakeMail {
     async fn connect(&self) -> Result<Box<dyn MailSession>, MailError> {
+        let mut holds = self.holds.subscribe();
+        if *holds.borrow_and_update() > 0 {
+            struct Waiting<'a>(&'a Mutex<State>);
+            impl Drop for Waiting<'_> {
+                fn drop(&mut self) {
+                    self.0.lock().unwrap().waiting -= 1;
+                }
+            }
+            self.state.lock().unwrap().waiting += 1;
+            let _waiting = Waiting(&self.state);
+            let _ = holds.wait_for(|n| *n == 0).await;
+        }
         self.take_failure()?;
         self.state.lock().unwrap().connects += 1;
         Ok(Box::new(FakeSession { fake: self.clone() }))
@@ -1157,6 +1196,29 @@ pub async fn write_conformance(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn a_held_server_keeps_new_sessions_waiting_until_released() {
+        let fake = FakeMail::new();
+        let first = fake.hold();
+        let second = fake.hold();
+        let f = fake.clone();
+        let session = tokio::spawn(async move { f.connect().await.is_ok() });
+        while fake.waiting() == 0 {
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(fake.connects(), 0);
+        drop(first);
+        tokio::task::yield_now().await;
+        assert_eq!(
+            (fake.waiting(), fake.connects()),
+            (1, 0),
+            "one hold remains"
+        );
+        drop(second);
+        assert!(session.await.unwrap());
+        assert_eq!((fake.waiting(), fake.connects()), (0, 1));
+    }
 
     #[tokio::test]
     async fn the_fake_keeps_the_contract() {

@@ -130,7 +130,84 @@ pub async fn link(h: &dyn Harness) {
     many_concurrent_streams(h).await;
     big_transfer(h).await;
     revocation(h).await;
+    one_protocol_only(h).await;
     close(h).await;
+}
+
+struct OnlyOn(crate::PublicKey, Protocol);
+
+impl Trust for OnlyOn {
+    fn allows(&self, _: &crate::PublicKey) -> bool {
+        false
+    }
+
+    fn allows_on(&self, peer: &crate::PublicKey, protocol: &Protocol) -> bool {
+        *peer == self.0 && *protocol == self.1
+    }
+
+    fn reachable(&self, peer: &crate::PublicKey) -> bool {
+        *peer == self.0
+    }
+}
+
+async fn one_protocol_only(h: &dyn Harness) {
+    let b = Node::new(h).await;
+    let open = proto("conf-only-open");
+    let closed = proto("conf-only-closed");
+    let a_id = Identity::generate();
+    let a_key = a_id.public();
+    let a = h
+        .link(a_id, Arc::new(OnlyOn(b.link.local(), open.clone())))
+        .await;
+    b.pins.insert(a_key);
+    let mut la_open = a.listen(&open).await.unwrap();
+    let mut la_closed = a.listen(&closed).await.unwrap();
+    let mut lb_closed = b.link.listen(&closed).await.unwrap();
+    let mut lb_open = b.link.listen(&open).await.unwrap();
+
+    let mut s = within("open on the admitted protocol", b.link.open(&a_key, &open))
+        .await
+        .expect("a peer admitted on one protocol reaches it");
+    s.write_all(b"k").await.unwrap();
+    s.shutdown().await.unwrap();
+    let inc = next(&mut la_open).await;
+    assert_eq!(inc.peer, b.link.local());
+
+    let res = within("open on another protocol", b.link.open(&a_key, &closed)).await;
+    assert!(
+        matches!(res, Err(LinkError::Rejected)),
+        "every other protocol refuses it, got {:?}",
+        res.err()
+    );
+    quiet(
+        &mut la_closed,
+        "no stream on a protocol the peer is not admitted on",
+    )
+    .await;
+    assert!(matches!(
+        within(
+            "open out on another protocol",
+            a.open(&b.link.local(), &closed)
+        )
+        .await,
+        Err(LinkError::Untrusted)
+    ));
+    quiet(
+        &mut lb_closed,
+        "nothing leaves on a protocol the peer is not admitted on",
+    )
+    .await;
+    let mut s = within(
+        "open out on the admitted protocol",
+        a.open(&b.link.local(), &open),
+    )
+    .await
+    .expect("streams out on the admitted protocol work");
+    s.write_all(b"k").await.unwrap();
+    s.shutdown().await.unwrap();
+    next(&mut lb_open).await;
+    a.close().await;
+    b.link.close().await;
 }
 
 fn protocol_names() {

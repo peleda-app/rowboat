@@ -73,7 +73,7 @@ pub(crate) async fn all_metas(core: &Core) -> Result<Vec<AccountMeta>, NodeError
     }
 }
 
-async fn put_meta(core: &Core, meta: &AccountMeta) -> Result<(), NodeError> {
+pub(crate) async fn put_meta(core: &Core, meta: &AccountMeta) -> Result<(), NodeError> {
     core.storage
         .control
         .put(
@@ -85,6 +85,17 @@ async fn put_meta(core: &Core, meta: &AccountMeta) -> Result<(), NodeError> {
         .await
         .map_err(errors::storage)?;
     Ok(())
+}
+
+/// The account's record, `None` when missing or unreadable.
+pub(crate) async fn meta_of(core: &Core, account: &AccountId) -> Option<AccountMeta> {
+    let (bytes, _) = core
+        .storage
+        .control
+        .get(&core.tenant, &meta_path(account))
+        .await
+        .ok()??;
+    records::decode_account_meta(&bytes).ok()
 }
 
 pub(crate) async fn delete_meta(core: &Core, account: &AccountId) -> Result<(), NodeError> {
@@ -237,7 +248,17 @@ impl Api {
     }
 
     async fn meta(&self, account: &AccountId) -> Result<AccountMeta, NodeError> {
+        self.meta_for(account, None).await
+    }
+
+    /// The account's record, when this node may read it and, with `class`, issue that class.
+    async fn meta_for(
+        &self,
+        account: &AccountId,
+        class: Option<CommandClass>,
+    ) -> Result<AccountMeta, NodeError> {
         let core = self.core();
+        core.group.check(account, class)?;
         let Some((bytes, _)) = core
             .storage
             .control
@@ -252,6 +273,21 @@ impl Api {
             return Err(NodeError::NotFound);
         }
         Ok(meta)
+    }
+
+    async fn pair(
+        &self,
+        code: &str,
+        address: Option<&str>,
+        grants: Option<&[AccountId]>,
+    ) -> Result<PairingResult, NodeError> {
+        let core = self.core();
+        let may_join = self.live_metas().await?.is_empty();
+        let (result, joined) = core.group.accept(code, address, may_join, grants).await?;
+        if let Some(joined) = joined {
+            crate::boot::switch_group(core, joined).await?;
+        }
+        Ok(result)
     }
 
     async fn live_metas(&self) -> Result<Vec<AccountMeta>, NodeError> {
@@ -340,7 +376,7 @@ impl Api {
         Ok(Some(Narrowed { filter, mailboxes }))
     }
 
-    async fn resolve(&self, targets: &Targets) -> Result<Resolved, NodeError> {
+    async fn resolve(&self, targets: &Targets, class: CommandClass) -> Result<Resolved, NodeError> {
         check::targets(targets)?;
         let mut out = Resolved {
             by_account: BTreeMap::new(),
@@ -349,7 +385,7 @@ impl Api {
         let mut checked = BTreeMap::new();
         for t in &targets.0 {
             if !checked.contains_key(&t.account) {
-                self.meta(&t.account).await?;
+                self.meta_for(&t.account, Some(class)).await?;
                 checked.insert(t.account.clone(), ());
             }
             let name = t.account.to_string();
@@ -375,6 +411,14 @@ impl Api {
 
     async fn submit(&self, account: &AccountId, body: CommandBody) -> Result<CommandId, NodeError> {
         let core = self.core();
+        if !core.leads(account.as_str()) {
+            let id = core
+                .replication()?
+                .submit(&skein_id(account)?, body)
+                .await
+                .map_err(crate::sync::err)?;
+            return CommandId::new(id.to_string());
+        }
         let id = skein_core::CommandId::generate();
         let command = Command {
             id: id.clone(),
@@ -428,7 +472,16 @@ impl Api {
     fn wake(&self, account: &AccountId) {
         let core = self.0.clone();
         let account = account.clone();
-        tokio::spawn(async move {
+        self.0.background.spawn(async move {
+            if !core.leads(account.as_str()) {
+                if let (Ok(r), Ok(id)) = (
+                    core.replication(),
+                    skein_core::AccountId::new(account.as_str()),
+                ) {
+                    let _ = r.sync_now(&id).await;
+                }
+                return;
+            }
             if let Ok(id) = skein_core::AccountId::new(account.as_str()) {
                 let _ = core
                     .signal
@@ -498,6 +551,11 @@ impl NodeApi for Api {
             .map_err(|_| NodeError::InvalidInput)?;
         providers::sign_in(&core.providers, &core.tenant, &record, &secret).await?;
         let password = secret.expose_str().ok_or(NodeError::InvalidInput)?;
+        core.group.add_account(&account).await?;
+        core.led
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(account.to_string());
         core.accounts
             .set_password(&core.tenant, &id, password)
             .await
@@ -513,6 +571,7 @@ impl NodeApi for Api {
                 removing: false,
                 notify: true,
                 created_at: core.clock.now_ms(),
+                owner: None,
             },
         )
         .await?;
@@ -527,7 +586,12 @@ impl NodeApi for Api {
     }
 
     async fn update_password(&self, account: &AccountId, secret: Secret) -> Result<(), NodeError> {
-        self.meta(account).await?;
+        let meta = self
+            .meta_for(account, Some(CommandClass::AccountPassword))
+            .await?;
+        if meta.owner.is_some() {
+            return Err(NodeError::Unavailable);
+        }
         check::password(&secret)?;
         let core = self.core();
         let id = skein_id(account)?;
@@ -553,7 +617,12 @@ impl NodeApi for Api {
         account: &AccountId,
         patch: AccountPatch,
     ) -> Result<(), NodeError> {
-        let mut meta = self.meta(account).await?;
+        let mut meta = self
+            .meta_for(account, Some(CommandClass::AccountUpdate))
+            .await?;
+        if meta.owner.is_some() {
+            return Err(NodeError::Unavailable);
+        }
         check::patch(&patch)?;
         let core = self.core();
         let id = skein_id(account)?;
@@ -588,8 +657,17 @@ impl NodeApi for Api {
     }
 
     async fn remove_account(&self, account: &AccountId) -> Result<(), NodeError> {
-        let mut meta = self.meta(account).await?;
+        let mut meta = self
+            .meta_for(account, Some(CommandClass::AccountRemove))
+            .await?;
+        if meta.owner.is_some() {
+            return Err(NodeError::Unavailable);
+        }
         let core = self.core();
+        core.led
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(account.as_str());
         let id = skein_id(account)?;
         meta.removing = true;
         put_meta(core, &meta).await?;
@@ -661,7 +739,16 @@ impl NodeApi for Api {
 
     async fn sync_now(&self, account: Option<&AccountId>) -> Result<(), NodeError> {
         for a in self.accounts_of(account).await? {
-            self.wake(&a);
+            if self
+                .core()
+                .group
+                .check(&a, Some(CommandClass::Sync))
+                .is_ok()
+            {
+                self.wake(&a);
+            } else if account.is_some() {
+                return Err(NodeError::NotFound);
+            }
         }
         Ok(())
     }
@@ -916,7 +1003,7 @@ impl NodeApi for Api {
     }
 
     async fn set_read(&self, targets: Targets, read: bool) -> Result<Queued, NodeError> {
-        let resolved = self.resolve(&targets).await?;
+        let resolved = self.resolve(&targets, CommandClass::Flags).await?;
         let seen = Flags::new(["\\Seen"]);
         self.queue(resolved, move |_, _| {
             let seen = seen.clone();
@@ -937,7 +1024,7 @@ impl NodeApi for Api {
     }
 
     async fn set_flagged(&self, targets: Targets, flagged: bool) -> Result<Queued, NodeError> {
-        let resolved = self.resolve(&targets).await?;
+        let resolved = self.resolve(&targets, CommandClass::Flags).await?;
         let flag = Flags::new(["\\Flagged"]);
         self.queue(resolved, move |_, _| {
             let flag = flag.clone();
@@ -968,7 +1055,7 @@ impl NodeApi for Api {
     async fn move_to(&self, targets: Targets, mailbox: &MailboxId) -> Result<Queued, NodeError> {
         check::targets_of_one_account(&targets)?;
         let account = targets.0[0].account.clone();
-        self.meta(&account).await?;
+        self.meta_for(&account, Some(CommandClass::Move)).await?;
         if !self
             .mailboxes(&account)
             .await?
@@ -977,7 +1064,7 @@ impl NodeApi for Api {
         {
             return Err(NodeError::NotFound);
         }
-        let resolved = self.resolve(&targets).await?;
+        let resolved = self.resolve(&targets, CommandClass::Move).await?;
         let to = mailbox.clone();
         self.queue(resolved, move |_, from| {
             (from != to.as_str()).then(|| {
@@ -1005,7 +1092,7 @@ impl NodeApi for Api {
             if archives.contains_key(&t.account) {
                 continue;
             }
-            let meta = self.meta(&t.account).await?;
+            let meta = self.meta_for(&t.account, Some(CommandClass::Move)).await?;
             let by_role = self
                 .role_mailboxes(&t.account, MailboxRole::Archive)
                 .await?
@@ -1014,7 +1101,7 @@ impl NodeApi for Api {
             let archive = by_role.or(meta.archive).ok_or(NodeError::NoArchive)?;
             archives.insert(t.account.clone(), archive);
         }
-        let resolved = self.resolve(&targets).await?;
+        let resolved = self.resolve(&targets, CommandClass::Move).await?;
         self.queue(resolved, move |account, from| {
             let to = archives.get(account)?.clone();
             (from != to.as_str()).then(|| {
@@ -1037,12 +1124,17 @@ impl NodeApi for Api {
 
     async fn delete(&self, targets: Targets, permanent: bool) -> Result<Queued, NodeError> {
         check::targets(&targets)?;
+        let class = if permanent {
+            CommandClass::DeleteForever
+        } else {
+            CommandClass::Delete
+        };
         let mut trash: BTreeMap<AccountId, Option<MailboxId>> = BTreeMap::new();
         for t in &targets.0 {
             if trash.contains_key(&t.account) {
                 continue;
             }
-            self.meta(&t.account).await?;
+            self.meta_for(&t.account, Some(class)).await?;
             let box_ = self
                 .role_mailboxes(&t.account, MailboxRole::Trash)
                 .await?
@@ -1053,7 +1145,7 @@ impl NodeApi for Api {
             }
             trash.insert(t.account.clone(), box_);
         }
-        let resolved = self.resolve(&targets).await?;
+        let resolved = self.resolve(&targets, class).await?;
         self.queue(resolved, move |account, _| {
             let change = if permanent {
                 Change {
@@ -1080,7 +1172,8 @@ impl NodeApi for Api {
 
     async fn save_draft(&self, mut draft: Draft) -> Result<DraftId, NodeError> {
         check::draft(&draft)?;
-        self.meta(&draft.account).await?;
+        self.meta_for(&draft.account, Some(CommandClass::Draft))
+            .await?;
         let core = self.core();
         let existing = draft_records(core).await?;
         let id = match &draft.id {
@@ -1171,7 +1264,9 @@ impl NodeApi for Api {
 
     async fn send(&self, mut draft: Draft) -> Result<SendQueued, NodeError> {
         check::sendable(&draft)?;
-        let meta = self.meta(&draft.account).await?;
+        let meta = self
+            .meta_for(&draft.account, Some(CommandClass::Send))
+            .await?;
         let core = self.core();
         let local = skein_core::CommandId::generate().to_string();
         let seed = random::alnum(24);
@@ -1248,10 +1343,25 @@ impl NodeApi for Api {
     }
 
     async fn cancel_send(&self, account: &AccountId, command: &CommandId) -> Result<(), NodeError> {
-        self.meta(account).await?;
+        self.meta_for(account, Some(CommandClass::SendCancel))
+            .await?;
         let core = self.core();
         let id =
             skein_core::CommandId::new(command.as_str()).map_err(|_| NodeError::InvalidInput)?;
+        if !core.leads(account.as_str()) {
+            core.replication()?
+                .cancel(&skein_id(account)?, &id)
+                .await
+                .map_err(crate::sync::err)?;
+            core.sends.remove(command.as_str());
+            settle_draft(core, command.as_str(), false).await?;
+            core.hub.send(NodeEvent::CommandSettled {
+                account: account.clone(),
+                command: command.clone(),
+                outcome: CommandOutcome::Cancelled,
+            });
+            return Ok(());
+        }
         cancel_command(&core.storage, &core.tenant, &skein_id(account)?, &id)
             .await
             .map_err(submit_error)?;
@@ -1399,6 +1509,101 @@ impl NodeApi for Api {
         let name = account.to_string();
         let a = address.to_string();
         db(&self.core().store, move |s| s.knows_address(&name, &a)).await
+    }
+
+    async fn create_invite(&self) -> Result<PairingInvite, NodeError> {
+        self.core().group.create_invite().await
+    }
+
+    async fn cancel_invite(&self, invite: &str) -> Result<(), NodeError> {
+        group::invite_id(invite)?;
+        self.core().group.cancel_invite(invite)
+    }
+
+    async fn inspect_invite(
+        &self,
+        code: &str,
+        address: Option<&str>,
+    ) -> Result<InviteInfo, NodeError> {
+        self.core().group.inspect(code, address)
+    }
+
+    async fn accept_invite(
+        &self,
+        code: &str,
+        address: Option<&str>,
+    ) -> Result<PairingResult, NodeError> {
+        self.pair(code, address, None).await
+    }
+
+    async fn adopt_server(
+        &self,
+        code: &str,
+        address: Option<&str>,
+        accounts: &[AccountId],
+    ) -> Result<PairingResult, NodeError> {
+        if accounts.len() > group::MAX_GRANTS {
+            return Err(NodeError::InvalidInput);
+        }
+        self.pair(code, address, Some(accounts)).await
+    }
+
+    async fn grant_to_server(&self, server: &str, accounts: &[AccountId]) -> Result<(), NodeError> {
+        group::node_id(server)?;
+        if accounts.len() > group::MAX_GRANTS {
+            return Err(NodeError::InvalidInput);
+        }
+        self.core().group.grant_to_server(server, accounts).await
+    }
+
+    async fn confirm_pairing(&self, pairing: &str, matches: bool) -> Result<(), NodeError> {
+        group::invite_id(pairing)?;
+        self.core().group.confirm(pairing, matches)
+    }
+
+    async fn list_nodes(&self) -> Result<Vec<NodeSummary>, NodeError> {
+        self.core().group.list().await
+    }
+
+    async fn rename_node(&self, node_id: &str, label: Option<&str>) -> Result<(), NodeError> {
+        group::node_id(node_id)?;
+        if let Some(l) = label {
+            group::node_label(l)?;
+        }
+        self.core().group.rename(node_id, label).await
+    }
+
+    async fn revoke_node(&self, node_id: &str) -> Result<Revoked, NodeError> {
+        group::node_id(node_id)?;
+        self.core().group.revoke(node_id).await
+    }
+
+    async fn group_status(&self) -> Result<GroupStatus, NodeError> {
+        let core = self.core();
+        let m = core.group.membership()?;
+        let me = m.node();
+        let has_server = m
+            .counting_peers()
+            .iter()
+            .any(|p| m.class_of(p) == Some(baton_lease::NodeClass::Server));
+        let server = if !has_server {
+            ServerState::None
+        } else if core.arbiter.in_fallback() {
+            ServerState::Silent
+        } else {
+            ServerState::Answering
+        };
+        let mut leaders = Vec::new();
+        for meta in self.live_metas().await? {
+            let account = meta.account;
+            let node = crate::leases::leader_of(core, account.as_str(), &me).await;
+            leaders.push(AccountLeader { account, node });
+        }
+        Ok(GroupStatus { server, leaders })
+    }
+
+    fn group_events(&self) -> GroupEventStream {
+        self.core().group.subscribe()
     }
 
     fn events(&self) -> EventStream {

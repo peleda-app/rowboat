@@ -190,6 +190,7 @@ async fn conformance_without_tiers() {
     testing::commands(storage.commands.clone()).await;
     testing::log(storage.log.clone()).await;
     testing::snapshots(storage.log.clone()).await;
+    testing::replica(storage.log.clone()).await;
     testing::purge(storage).await;
 }
 
@@ -504,11 +505,7 @@ async fn a_slow_tier_costs_at_most_the_timeout() {
             .unwrap()
             .is_some()
     );
-    let spent = start.elapsed();
-    assert!(
-        spent >= Duration::from_millis(250) && spent < Duration::from_millis(300),
-        "{spent:?}"
-    );
+    assert_eq!(start.elapsed(), Duration::from_millis(250));
 }
 
 #[tokio::test(start_paused = true)]
@@ -521,9 +518,7 @@ async fn many_concurrent_reads_through_a_slow_tier() {
         .with_timeout(Duration::from_secs(1))
         .without_fill()
         .build();
-    let start = tokio::time::Instant::now();
-    let reads = (0..512).map(|_| {
-        let storage = storage.clone();
+    let read = |storage: Storage| {
         let head = origin.head.clone();
         let blob = origin.blob;
         async move {
@@ -531,13 +526,19 @@ async fn many_concurrent_reads_through_a_slow_tier() {
             let body = storage.blobs.get(&t(), &blob).await.unwrap().unwrap();
             (seqs.len(), body.len())
         }
-    });
-    let results = futures_join_all(reads).await;
+    };
+    let start = tokio::time::Instant::now();
+    assert_eq!(read(storage.clone()).await, (8, BODY.len()));
+    let one = start.elapsed();
+    assert!(one >= Duration::from_secs(1), "the slow tier was asked");
+
+    let start = tokio::time::Instant::now();
+    let results = futures_join_all((0..512).map(|_| read(storage.clone()))).await;
     assert!(results.iter().all(|r| *r == (8, BODY.len())));
-    assert!(
-        start.elapsed() < Duration::from_secs(5),
-        "reads wait on the timeout concurrently, not one after another: {:?}",
-        start.elapsed()
+    assert_eq!(
+        start.elapsed(),
+        one,
+        "reads wait on the timeout concurrently, not one after another"
     );
     assert_eq!(origin.head.seq, Seq(8));
 }

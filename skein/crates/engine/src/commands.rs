@@ -162,6 +162,55 @@ fn repeatable(body: &CommandBody) -> bool {
     )
 }
 
+/// Marks every queued command of `account` that cannot be repeated safely (move, delete, append,
+/// send; not flag and label changes or refetches) as started, unless it already has a marker, so
+/// that the next run reports it as uncertain instead of carrying it out. For a node that takes an
+/// account over from a holder that may still have been running the same queue when it went
+/// silent: an uncertain outcome is shown, nothing runs twice. Returns how many were marked.
+/// Idempotent; a command cancelled meanwhile keeps its cancellation.
+pub async fn presume_started(
+    storage: &skein_storage::Storage,
+    tenant: &TenantId,
+    account: &AccountId,
+) -> Result<usize, EngineError> {
+    let mut after: Option<skein_core::CommandId> = None;
+    let mut marked = 0;
+    loop {
+        let pending = storage
+            .commands
+            .pending_after(tenant, account, after.as_ref(), PAGE)
+            .await?;
+        let Some(last) = pending.last() else {
+            break;
+        };
+        after = Some(last.id.clone());
+        for command in &pending {
+            if command.body.is_collection_command() || repeatable(&command.body) {
+                continue;
+            }
+            let marker = command_marker(account, command.id.as_str());
+            match storage
+                .control
+                .put(
+                    tenant,
+                    &marker,
+                    Bytes::from_static(b"started"),
+                    Expect::Absent,
+                )
+                .await
+            {
+                Ok(_) => marked += 1,
+                Err(StorageError::Conflict) => {}
+                Err(e) => return Err(e.into()),
+            }
+        }
+        if pending.len() < PAGE {
+            break;
+        }
+    }
+    Ok(marked)
+}
+
 fn refused(command: &Command, results: &[RecipientResult], copy: Option<SentCopy>) -> EventBody {
     delivered(command, &SendReport::new(results.to_vec()), copy)
 }

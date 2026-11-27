@@ -58,6 +58,16 @@ pub trait Authorize: Send + Sync {
     fn lease(&self, peer: &PublicKey, group: &GroupId, key: &LeaseKey) -> bool;
 }
 
+/// Vouches for a lease the server granted, in a form the server's users define (for example a
+/// grant signed with the server's key), so that the holder can show others which arbiter granted
+/// its token. Asked only for a lease the server's record names with that exact token, by the
+/// node it names; never blocks on I/O.
+pub trait Endorse: Send + Sync {
+    /// The endorsement of `lease`, at most [`wire::MAX_ENDORSEMENT`] bytes, or `None` to give
+    /// none.
+    fn endorse(&self, lease: &baton_lease::Lease) -> Option<Vec<u8>>;
+}
+
 /// Limits and timings of a [`LeaseServer`].
 #[derive(Debug, Clone)]
 pub struct ServerConfig {
@@ -69,6 +79,11 @@ pub struct ServerConfig {
     /// `max(ttl_ms, previous_ttl_ms)`, so lowering the time-to-live across a restart never lets
     /// another node take a lease its holder still thinks valid.
     pub previous_ttl_ms: u64,
+    /// For this long after it starts (on its clock), the server grants a key only to the node
+    /// its record already names (a renewal) and nothing to anyone else, so that a node still
+    /// acting on a lease another arbiter granted (it has not yet learned that this server
+    /// arbitrates now) has stopped by the time anyone takes the key here. 0 for none.
+    pub grace_ms: u64,
     /// How long a stream may stay idle between requests before it is closed.
     pub idle_timeout: Duration,
     /// How long a peer may take to send the rest of a request once its first byte arrived.
@@ -87,6 +102,15 @@ pub struct ServerConfig {
     pub busy_wait: Duration,
     /// The largest reply body (an `Alive` list larger than this is refused as too large).
     pub max_reply: usize,
+    /// Endorses leases on request ([`wire::Request::Endorse`]); without it every request for
+    /// an endorsement is answered with none.
+    pub endorse: Option<std::sync::Arc<dyn Endorse>>,
+}
+
+impl std::fmt::Debug for dyn Endorse {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Endorse")
+    }
 }
 
 impl Default for ServerConfig {
@@ -94,6 +118,7 @@ impl Default for ServerConfig {
         Self {
             ttl_ms: 15_000,
             previous_ttl_ms: 0,
+            grace_ms: 0,
             idle_timeout: Duration::from_secs(60),
             header_timeout: Duration::from_secs(2),
             write_timeout: Duration::from_secs(5),
@@ -103,6 +128,7 @@ impl Default for ServerConfig {
             max_busy: 256,
             busy_wait: Duration::from_secs(1),
             max_reply: wire::MAX_REPLY,
+            endorse: None,
         }
     }
 }

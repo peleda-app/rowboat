@@ -114,6 +114,7 @@ struct Node {
 
 struct Record {
     ends: [PublicKey; 2],
+    protocol: Protocol,
     cut: Arc<Cut>,
 }
 
@@ -279,7 +280,7 @@ impl Link for MemoryLink {
         protocol: &Protocol,
     ) -> Result<Box<dyn Duplex>, LinkError> {
         self.ensure_open()?;
-        if !self.node.trust.allows(peer) {
+        if !self.node.trust.allows_on(peer, protocol) {
             return Err(LinkError::Untrusted);
         }
         let mut state = self.hub.state.lock().expect("hub lock");
@@ -292,7 +293,7 @@ impl Link for MemoryLink {
         if state.group(peer) != state.group(&self.node.key) {
             return Err(LinkError::Unreachable);
         }
-        if !remote.trust.allows(&self.node.key) {
+        if !remote.trust.allows_on(&self.node.key, protocol) {
             return Err(LinkError::Rejected);
         }
         let tx = remote
@@ -315,6 +316,7 @@ impl Link for MemoryLink {
         tx.send(incoming).map_err(|_| LinkError::Rejected)?;
         state.streams.push(Record {
             ends: [self.node.key, *peer],
+            protocol: protocol.clone(),
             cut: cut.clone(),
         });
         Ok(Box::new(Severable {
@@ -360,7 +362,7 @@ impl Link for MemoryLink {
             } else {
                 return false;
             };
-            !trust.allows(&other)
+            !trust.allows_on(&other, &r.protocol)
         });
         let peers: HashSet<PublicKey> = cut
             .into_iter()

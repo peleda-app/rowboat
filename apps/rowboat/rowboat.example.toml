@@ -1,0 +1,41 @@
+# Example configuration for `rowboat serve`. Secrets never go into this file: every secret is read
+# from the environment variable a `*_env` key names.
+
+data_dir = "/data"           # tenants' sealed data, the host lock and the status file
+secrets_dir = "/secrets"     # tenants' node keys, one directory each; keep it apart from data_dir
+cache_dir = "/cache"         # tenants' mail databases, cleared on every start and stop; a tmpfs outside data_dir is best
+first_run_invite = true      # an empty host creates a tenant and shows its invite on `serve` (no terminal: <secrets_dir>/first-run-invite.txt)
+
+[link]
+bind = "0.0.0.0"
+ports = "4400-4499"          # UDP: one per tenant's link, the rest for pairing; "any" for random
+advertise = []               # the host's public addresses, e.g. ["203.0.113.7"]
+relays = []                  # e.g. ["https://relay.example.com"]
+
+# The only inbound HTTP: provider push and GET /v1/health. Nothing manages the server over HTTP.
+[listener]
+enabled = true
+listen = "0.0.0.0:8080"
+# public_url = "https://mail.example.com"   # where Gmail and Graph push reach this host
+push_rate_per_second = 100
+
+[listener.push]
+enabled = false
+# gmail_topic = "projects/my-project/topics/rowboat-gmail"
+# gmail_token_env = "ROWBOAT_GMAIL_PUSH_TOKEN"
+
+# Keep tenants' objects in a bucket instead of data_dir (sealed exactly as on disk).
+# [s3]
+# endpoint = "https://s3.example.org"
+# bucket = "rowboat"
+# region = "us-east-1"
+# prefix = "prod"
+# access_key_id_env = "ROWBOAT_S3_ACCESS_KEY_ID"
+# secret_access_key_env = "ROWBOAT_S3_SECRET_ACCESS_KEY"
+
+[logs]
+filter = "info"
+json = true
+
+[shutdown]
+handback_secs = 15           # how long a stopping tenant waits for devices to take its accounts

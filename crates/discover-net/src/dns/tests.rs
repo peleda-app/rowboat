@@ -309,12 +309,17 @@ async fn a_silent_or_truncating_server_gives_no_answer_in_time() {
         vec![msg]
     })
     .await;
-    let started = std::time::Instant::now();
+    let hang = Duration::from_secs(30);
     let r = UdpResolver::new(vec![silent], Duration::from_millis(200));
-    assert_eq!(r.srv(NAME).await, Err(DiscoverError::Timeout));
+    let got = tokio::time::timeout(hang, r.srv(NAME))
+        .await
+        .expect("the resolver's own timeout fires");
+    assert_eq!(got, Err(DiscoverError::Timeout));
     let r = UdpResolver::new(vec![truncating], Duration::from_millis(200));
-    assert_eq!(r.srv(NAME).await, Err(DiscoverError::Unavailable));
-    assert!(started.elapsed() < Duration::from_secs(5));
+    let got = tokio::time::timeout(hang, r.srv(NAME))
+        .await
+        .expect("a truncated answer ends the query");
+    assert_eq!(got, Err(DiscoverError::Unavailable));
 }
 
 proptest! {

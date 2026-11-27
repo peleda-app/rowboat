@@ -33,6 +33,36 @@ pub fn node_profile(node: NodeId, weight: u32, always_on: bool) -> NodeProfile {
     }
 }
 
+/// Which nodes may lead an account, for [`crate::RunConfig::eligible`]: the engine picks the
+/// node that should own an account among live nodes this accepts.
+pub trait Eligible: Send + Sync {
+    /// Whether `node` may lead `account` of `tenant`. Asked once per account and live node on
+    /// every heartbeat: answer from memory, never block.
+    fn may_lead(&self, tenant: &TenantId, account: &AccountId, node: &NodeId) -> bool;
+}
+
+/// Work done when an account's lease changes hands on this node.
+///
+/// Guarantees: [`LeaseHooks::acquired`] runs once for every lease this node takes and has not
+/// acted on since its heartbeats last lapsed, after the lease is granted and before the log is
+/// claimed with its token or anything else runs under it; a failure releases the lease and the
+/// run ends with that error. [`LeaseHooks::releasing`] runs before this node gives up a lease it
+/// holds, at a clean point (no worker of the account is running), and the lease is released after
+/// it returns, whatever it did.
+#[async_trait]
+pub trait LeaseHooks: Send + Sync {
+    /// The node just took `lease` on `account`.
+    async fn acquired(
+        &self,
+        tenant: &TenantId,
+        account: &AccountId,
+        lease: &Lease,
+    ) -> Result<(), EngineError>;
+
+    /// The node is about to release `lease` on `account`.
+    async fn releasing(&self, tenant: &TenantId, account: &AccountId, lease: &Lease);
+}
+
 /// [`Liveness`] that keeps every group's heartbeats in one group, so a node heartbeats once per
 /// interval instead of once per tenant. Every node then counts as a node of every tenant, which is
 /// what a plain Skein deployment is: any node may hold any account.
@@ -91,9 +121,18 @@ impl Liveness for OneGroupLiveness {
 /// Every lapse ends an epoch: arming, or a heartbeat that succeeds `valid_for` or more after the
 /// start of the one before. A lease taken in an earlier epoch is never acted on again, even once
 /// heartbeats succeed, because another node may have taken the account during the lapse.
-#[derive(Default)]
 pub(crate) struct Holding {
     inner: Mutex<HoldingState>,
+    epochs: tokio::sync::watch::Sender<u64>,
+}
+
+impl Default for Holding {
+    fn default() -> Self {
+        Self {
+            inner: Mutex::default(),
+            epochs: tokio::sync::watch::channel(0).0,
+        }
+    }
 }
 
 #[derive(Default)]
@@ -114,10 +153,16 @@ impl HoldingState {
 }
 
 impl Holding {
+    /// Changes every time an epoch ends.
+    pub(crate) fn epochs(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.epochs.subscribe()
+    }
+
     pub(crate) fn arm(&self, valid_for: Duration) {
         let mut s = self.inner.lock().expect("holding lock");
         s.valid_for = Some(valid_for);
         s.epoch += 1;
+        self.epochs.send_replace(s.epoch);
     }
 
     pub(crate) fn beat(&self, started: Instant) {
@@ -126,6 +171,7 @@ impl Holding {
             && Instant::now().saturating_duration_since(prev) >= d
         {
             s.epoch += 1;
+            self.epochs.send_replace(s.epoch);
         }
         if s.since.is_none_or(|t| t < started) {
             s.since = Some(started);
@@ -134,6 +180,13 @@ impl Holding {
 
     pub(crate) fn held(&self) -> bool {
         self.inner.lock().expect("holding lock").held()
+    }
+
+    pub(crate) fn lapse(&self) {
+        let mut s = self.inner.lock().expect("holding lock");
+        s.epoch += 1;
+        s.since = None;
+        self.epochs.send_replace(s.epoch);
     }
 
     fn record(&self, tenant: &TenantId, account: &AccountId, fence: FencingToken) -> bool {
@@ -152,7 +205,15 @@ impl Holding {
         s.held() && s.leases.get(&(tenant.clone(), account.clone())) == Some(&(fence, s.epoch))
     }
 
-    fn forget(&self, tenant: &TenantId, account: &AccountId) {
+    pub(crate) fn holds_any(&self, tenant: &TenantId, account: &AccountId) -> bool {
+        let s = self.inner.lock().expect("holding lock");
+        s.held()
+            && s.leases
+                .get(&(tenant.clone(), account.clone()))
+                .is_some_and(|(_, e)| *e == s.epoch)
+    }
+
+    pub(crate) fn forget(&self, tenant: &TenantId, account: &AccountId) {
         let mut s = self.inner.lock().expect("holding lock");
         s.leases.remove(&(tenant.clone(), account.clone()));
     }
@@ -191,24 +252,51 @@ impl Engine {
 
     /// Takes or renews the account's lease and claims the log with its token. A pending takeover
     /// by a stronger node is honoured here, at the start of a run: the lease is released and the
-    /// call fails with [`EngineError::NotOwner`].
+    /// call fails with [`EngineError::NotOwner`]. When another node holds the lease, this node asks
+    /// it to hand over (refused unless this node is stronger) and fails with `NotOwner`. A journal
+    /// already claimed with a higher token gives the lease back and fails with `NotOwner`, so the
+    /// account never stays with a node that cannot write it.
     pub(crate) async fn lease(&self, config: &AccountConfig) -> Result<Lease, EngineError> {
         self.check_held()?;
         let group = coordination::group(&config.tenant);
         let key = coordination::lease_key(&config.account);
-        let lease = self
-            .leases
-            .acquire(&group, &key, &self.profile)
-            .await?
-            .ok_or(EngineError::NotOwner)?;
+        let profile = self.profile();
+        let Some(lease) = self.leases.acquire(&group, &key, &profile).await? else {
+            self.holding.forget(&config.tenant, &config.account);
+            let _ = self.leases.request_takeover(&group, &key, &profile).await;
+            return Err(EngineError::NotOwner);
+        };
         if lease.takeover.is_some() {
+            if let Some(h) = &self.hooks {
+                h.releasing(&config.tenant, &config.account, &lease).await;
+            }
+            self.holding.forget(&config.tenant, &config.account);
             let _ = self.leases.release(&lease).await;
             return Err(EngineError::NotOwner);
         }
-        self.storage
+        if let Some(h) = &self.hooks
+            && !self
+                .holding
+                .holds(&config.tenant, &config.account, lease.fence)
+            && let Err(e) = h.acquired(&config.tenant, &config.account, &lease).await
+        {
+            let _ = self.leases.release(&lease).await;
+            return Err(e);
+        }
+        match self
+            .storage
             .log
             .claim(&config.tenant, &config.account, lease.fence)
-            .await?;
+            .await
+        {
+            Ok(_) => {}
+            Err(skein_storage::StorageError::Fenced) => {
+                self.holding.forget(&config.tenant, &config.account);
+                let _ = self.leases.release(&lease).await;
+                return Err(EngineError::NotOwner);
+            }
+            Err(e) => return Err(e.into()),
+        }
         if !self
             .holding
             .record(&config.tenant, &config.account, lease.fence)
@@ -226,6 +314,9 @@ impl Engine {
         if let Ok(Some(lease)) = self.leases.holder(&group, &key).await
             && lease.node == self.profile.node
         {
+            if let Some(h) = &self.hooks {
+                h.releasing(tenant, account, &lease).await;
+            }
             let _ = self.leases.release(&lease).await;
         }
     }
@@ -300,6 +391,33 @@ mod tests {
         assert!(!h.holds(&t, &a, FencingToken(3)));
         h.forget(&t, &a);
         assert!(!h.holds(&t, &a, FencingToken(3)));
+    }
+
+    #[test]
+    fn a_lapse_ends_the_epoch_at_once() {
+        let (t, a) = (TenantId::new("t").unwrap(), AccountId::new("a").unwrap());
+        let h = Holding::default();
+        h.arm(Duration::from_secs(60));
+        h.beat(Instant::now());
+        assert!(h.record(&t, &a, FencingToken(1)));
+        h.lapse();
+        assert!(!h.held(), "nothing is acted on until the next heartbeat");
+        assert!(!h.record(&t, &a, FencingToken(1)));
+        h.beat(Instant::now());
+        assert!(
+            !h.holds(&t, &a, FencingToken(1)),
+            "a lease from before the lapse is never held again"
+        );
+        assert!(h.record(&t, &a, FencingToken(2)));
+        assert!(h.holds_any(&t, &a));
+        let mut epochs = h.epochs();
+        epochs.borrow_and_update();
+        h.lapse();
+        assert!(epochs.has_changed().unwrap(), "workers waiting are woken");
+        let unarmed = Holding::default();
+        assert!(unarmed.record(&t, &a, FencingToken(1)));
+        unarmed.lapse();
+        assert!(!unarmed.holds_any(&t, &a));
     }
 
     #[test]

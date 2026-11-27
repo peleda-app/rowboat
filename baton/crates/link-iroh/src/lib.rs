@@ -401,7 +401,7 @@ async fn serve_stream(
             return;
         }
     };
-    let tx = if inner.closed.load(Ordering::SeqCst) || !inner.trust.allows(&peer) {
+    let tx = if inner.closed.load(Ordering::SeqCst) || !inner.trust.allows_on(&peer, &protocol) {
         None
     } else {
         inner
@@ -476,7 +476,7 @@ impl Link for IrohLink {
     ) -> Result<Box<dyn Duplex>, LinkError> {
         let inner = &self.inner;
         inner.ensure_open()?;
-        if !inner.trust.allows(peer) {
+        if !inner.trust.allows_on(peer, protocol) {
             return Err(LinkError::Untrusted);
         }
         if *peer == inner.key {
@@ -576,7 +576,7 @@ impl Link for IrohLink {
             .lock()
             .expect("live lock")
             .values()
-            .filter(|(peer, _)| !inner.trust.allows(peer))
+            .filter(|(peer, _)| !inner.trust.reachable(peer))
             .cloned()
             .collect();
         let mut peers = HashSet::new();
@@ -595,7 +595,7 @@ impl Link for IrohLink {
             .pool
             .lock()
             .expect("pool lock")
-            .retain(|(peer, _), _| inner.trust.allows(peer));
+            .retain(|(peer, protocol), _| inner.trust.allows_on(peer, protocol));
         Ok(peers.len())
     }
 

@@ -1,0 +1,57 @@
+[package]
+name = "rowboat-sync"
+description = "Journal replication between a person's nodes, head attestation, peer fetch of segments and blobs, and commands from any node to the account's owner"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+readme = "docs/README.md"
+
+[package.metadata.dojo]
+kind = "library"
+
+[dependencies]
+rowboat-group.workspace = true
+rowboat-api.workspace = true
+skein-core.workspace = true
+skein-storage.workspace = true
+skein-engine.workspace = true
+skein-keyring.workspace = true
+baton-core.workspace = true
+baton-command.workspace = true
+baton-fetch.workspace = true
+baton-group.workspace = true
+baton-identity.workspace = true
+baton-lease.workspace = true
+baton-link.workspace = true
+baton-seal.workspace = true
+baton-signal.workspace = true
+async-trait.workspace = true
+blake3.workspace = true
+bytes.workspace = true
+futures.workspace = true
+postcard.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["io-util", "sync", "time", "rt", "macros"] }
+tracing.workspace = true
+ulid.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+skein-keyring-local.workspace = true
+skein-storage = { workspace = true, features = ["testing"] }
+skein-storage-memory.workspace = true
+skein-storage-tiered.workspace = true
+baton-link-memory.workspace = true
+baton-signal-local.workspace = true
+baton-keys.workspace = true
+baton-state-memory.workspace = true
+proptest.workspace = true
+tokio = { workspace = true, features = ["io-util", "sync", "time", "rt-multi-thread", "macros", "test-util"] }
+
+[lints]
+workspace = true

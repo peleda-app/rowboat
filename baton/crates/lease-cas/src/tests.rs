@@ -87,6 +87,81 @@ async fn conformance() {
         TTL,
     )))
     .await;
+    let s = setup();
+    let h = Arc::new(H {
+        live: s.live.clone(),
+        now: s.now.clone(),
+        registered: Mutex::new(Vec::new()),
+    });
+    testing::floors(Arc::new(s.leases), h).await;
+}
+
+#[tokio::test]
+async fn a_floor_far_ahead_of_the_clock_is_ignored() {
+    let s = setup();
+    let a = testing::profile("a", NodeClass::Desktop);
+    let g = GroupId::new("g").unwrap();
+    let k = LeaseKey::new("k").unwrap();
+    s.live.heartbeat(&g, &a, Timestamp(T0)).await.unwrap();
+    let wild = FencingToken(u64::MAX - 1);
+    let l = s
+        .leases
+        .acquire_above(&g, &k, &a, wild)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        l.fence < wild,
+        "an implausible floor never raises the key's tokens"
+    );
+    let near = FencingToken((T0 as u64 + MAX_FLOOR_AHEAD_MS - 1) * 1000);
+    let l = s
+        .leases
+        .acquire_above(&g, &k, &a, near)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(l.fence > near, "a floor within the bound is honoured");
+}
+
+#[tokio::test]
+async fn the_last_heartbeat_is_the_writers_time() {
+    let state = Arc::new(MemoryState::new());
+    let live = CasLiveness::new(state.clone(), TTL);
+    let g = GroupId::new("g").unwrap();
+    let a = testing::profile("a", NodeClass::Desktop);
+    assert_eq!(live.last_heartbeat(&g, &a.node).await.unwrap(), None);
+    live.heartbeat(&g, &a, Timestamp(T0 + 5)).await.unwrap();
+    assert_eq!(
+        live.last_heartbeat(&g, &a.node).await.unwrap(),
+        Some(Timestamp(T0 + 5))
+    );
+    let b = testing::profile("b", NodeClass::Desktop);
+    state
+        .put(
+            &g,
+            &RecordName::new("nodes/b").unwrap(),
+            bytes::Bytes::from_static(b"{not json"),
+            baton_state::Expect::Any,
+        )
+        .await
+        .unwrap();
+    assert_eq!(live.last_heartbeat(&g, &b.node).await.unwrap(), None);
+    let forged = serde_json::json!({"v": 1, "profile": a, "at": T0 + 9});
+    state
+        .put(
+            &g,
+            &RecordName::new("nodes/b").unwrap(),
+            bytes::Bytes::from(serde_json::to_vec(&forged).unwrap()),
+            baton_state::Expect::Any,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        live.last_heartbeat(&g, &b.node).await.unwrap(),
+        None,
+        "a record naming another node is not its heartbeat"
+    );
 }
 
 #[tokio::test]

@@ -73,8 +73,6 @@ mod tests {
             quota.take(MESSAGES_GET).await;
         }
         // 500 units: 250 from the initial burst, 250 more over one second.
-        let spent = start.elapsed();
-        assert!(spent >= Duration::from_millis(990), "{spent:?}");
-        assert!(spent <= Duration::from_millis(1100), "{spent:?}");
+        assert_eq!(start.elapsed(), Duration::from_secs(1));
     }
 }

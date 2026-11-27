@@ -97,6 +97,11 @@ impl ResourceState {
             .and_then(|i| self.epochs.get(i as usize))
     }
 
+    /// The grants on the resource, by principal.
+    pub fn grants(&self) -> &BTreeMap<Principal, BTreeSet<Capability>> {
+        &self.grants
+    }
+
     /// The member that created the resource (its key after any rekey).
     pub fn creator(&self) -> &PublicKey {
         &self.creator
@@ -123,6 +128,7 @@ enum Signer {
         node: PublicKey,
         member: PublicKey,
         role: Role,
+        class: NodeClass,
     },
     GroupRecovery,
     MemberRecovery(PublicKey),
@@ -280,8 +286,9 @@ impl GroupState {
         self.checkpoint
     }
 
-    /// What `node` may do with `resource` at `at`: the grants to its member and to itself, if the
-    /// node counts. Blind nodes may do nothing, whatever the grants say.
+    /// What `node` may do with `resource` at `at`, if the node counts: the grants to itself and,
+    /// for desktops and phones, the grants to its member. A server holds only the grants to
+    /// itself; blind nodes may do nothing, whatever the grants say.
     pub fn capabilities(
         &self,
         resource: &ResourceId,
@@ -294,11 +301,14 @@ impl GroupState {
         if cert.class == NodeClass::Blind {
             return BTreeSet::new();
         }
-        let mut caps = r
-            .grants
-            .get(&Principal::Member(cert.member))
-            .cloned()
-            .unwrap_or_default();
+        let mut caps = match cert.class {
+            NodeClass::Server => BTreeSet::new(),
+            _ => r
+                .grants
+                .get(&Principal::Member(cert.member))
+                .cloned()
+                .unwrap_or_default(),
+        };
         caps.extend(
             r.grants
                 .get(&Principal::Node(*node))
@@ -387,6 +397,7 @@ impl GroupState {
                 node: *key,
                 member: cert.member,
                 role,
+                class: cert.class,
             });
         }
         if key == &self.group_recovery.sign {
@@ -484,6 +495,28 @@ impl GroupState {
         at: Timestamp,
         signer: Signer,
     ) -> Result<(), GroupError> {
+        if let Signer::Node {
+            node,
+            class: NodeClass::Server,
+            ..
+        } = &signer
+        {
+            let own = matches!(entry.op(), Op::RevokeNode { node: n } if n == node);
+            let member_level = matches!(
+                entry.op(),
+                Op::AddMember { .. }
+                    | Op::RemoveMember { .. }
+                    | Op::CertifyNode { .. }
+                    | Op::RenewNode { .. }
+                    | Op::RevokeNode { .. }
+                    | Op::CreateResource { .. }
+            );
+            if member_level && !own {
+                return Err(GroupError::NotAuthorized(
+                    "a server holds no member authority: it revokes only itself",
+                ));
+            }
+        }
         match entry.op() {
             Op::Genesis { .. } => Err(GroupError::Chain),
             Op::AddMember {
@@ -609,6 +642,46 @@ impl GroupState {
                         revoked: false,
                     },
                 );
+                Ok(())
+            }
+            Op::RenewNode { cert } => {
+                cert.verify()?;
+                let current = self
+                    .nodes
+                    .get(&cert.node)
+                    .filter(|n| !n.revoked)
+                    .ok_or(GroupError::Invalid("not a node"))?;
+                if current.cert.member != cert.member
+                    || current.cert.kem != cert.kem
+                    || current.cert.class != cert.class
+                {
+                    return Err(GroupError::Invalid(
+                        "a renewal keeps the member, the KEM key and the class",
+                    ));
+                }
+                if cert.expires <= current.cert.expires || cert.expires < at {
+                    return Err(GroupError::Invalid("a renewal moves the expiry forward"));
+                }
+                let target = self
+                    .members
+                    .get(&cert.member)
+                    .ok_or(GroupError::Invalid("the node's member is not in the group"))?
+                    .role;
+                let allowed = match signer {
+                    Signer::Node { member, role, .. } => {
+                        member == cert.member
+                            || role == Role::Owner
+                            || (role == Role::Admin && target == Role::Member)
+                    }
+                    Signer::MemberRecovery(m) => m == cert.member,
+                    Signer::GroupRecovery => true,
+                };
+                if !allowed {
+                    return Err(GroupError::NotAuthorized(
+                        "renewing a node for another member",
+                    ));
+                }
+                self.nodes.get_mut(&cert.node).expect("checked").cert = cert.clone();
                 Ok(())
             }
             Op::RevokeNode { node } => {

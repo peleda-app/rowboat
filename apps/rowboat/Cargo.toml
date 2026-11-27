@@ -1,0 +1,68 @@
+[package]
+name = "rowboat"
+description = "The headless multi-tenant server: one node per tenant, each the server node of one person's group"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+readme = "docs/README.md"
+publish = false
+
+[package.metadata.dojo]
+kind = "app"
+
+[features]
+default = []
+otel = ["skein-telemetry/otel"]
+# The container suite's image: lets the config add a test CA to the mail providers' roots.
+test-roots = ["rowboat-node/testing"]
+
+[dependencies]
+rowboat-api.workspace = true
+rowboat-node.workspace = true
+rowboat-keystore.workspace = true
+rowboat-keystore-file.workspace = true
+rowboat-endpoint.workspace = true
+rowboat-endpoint-iroh.workspace = true
+rinse-mail.workspace = true
+rinse-mail-direct.workspace = true
+baton-identity.workspace = true
+baton-lease.workspace = true
+baton-link.workspace = true
+baton-link-iroh.workspace = true
+baton-signal.workspace = true
+baton-signal-local.workspace = true
+skein-core.workspace = true
+skein-push.workspace = true
+skein-server.workspace = true
+skein-storage.workspace = true
+skein-storage-fs.workspace = true
+skein-storage-s3.workspace = true
+skein-telemetry.workspace = true
+anyhow.workspace = true
+async-trait.workspace = true
+clap.workspace = true
+data-encoding.workspace = true
+futures.workspace = true
+getrandom.workspace = true
+qrcodegen.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["net", "signal", "macros", "rt-multi-thread", "io-std", "io-util", "fs"] }
+toml.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+rowboat-node = { workspace = true, features = ["testing"] }
+rowboat-endpoint-memory.workspace = true
+rowboat-keystore-memory.workspace = true
+skein-mail = { workspace = true, features = ["testing"] }
+object_store.workspace = true
+tempfile.workspace = true
+tokio = { workspace = true, features = ["test-util"] }
+tracing-subscriber.workspace = true
+
+[lints]
+workspace = true

@@ -1,3 +1,4 @@
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -1573,30 +1574,37 @@ async fn trusts_extra_roots_only_when_given() {
 async fn gives_up_on_a_server_that_stops_answering() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
+    let accepted = Arc::new(AtomicUsize::new(0));
+    let count = accepted.clone();
     tokio::spawn(async move {
         let mut open = Vec::new();
         while let Ok((socket, _)) = listener.accept().await {
+            count.fetch_add(1, Ordering::SeqCst);
             open.push(socket);
         }
     });
     let mut settings = ImapSettings::new("127.0.0.1", "ada@example.com");
     settings.port = Some(port);
     settings.security = Security::Plain;
-    let started = std::time::Instant::now();
-    let error = ImapProvider::new(
+    let provider = ImapProvider::new(
         settings,
         Credentials::Password {
             secret: "secret".into(),
         },
     )
     .unwrap()
-    .with_timeout(Duration::from_millis(300))
-    .connect()
-    .await
-    .err()
-    .unwrap();
+    .with_timeout(Duration::from_millis(300));
+    let error = tokio::time::timeout(Duration::from_secs(30), provider.connect())
+        .await
+        .expect("the provider's own timeout fires")
+        .err()
+        .unwrap();
     assert!(matches!(error, MailError::Timeout(_)), "{error}");
-    assert!(started.elapsed() < Duration::from_secs(5));
+    assert_eq!(
+        accepted.load(Ordering::SeqCst),
+        1,
+        "one attempt, no retry loop"
+    );
 }
 
 #[test]
@@ -1753,22 +1761,30 @@ async fn probes_refuse_untrusted_certificates_plain_servers_and_wrong_ports() {
 async fn a_silent_server_ends_the_probe_in_time() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
+    let accepted = Arc::new(AtomicUsize::new(0));
+    let count = accepted.clone();
     tokio::spawn(async move {
         let mut open = Vec::new();
         while let Ok((socket, _)) = listener.accept().await {
+            count.fetch_add(1, Ordering::SeqCst);
             open.push(socket);
         }
     });
-    let started = std::time::Instant::now();
-    let error = crate::probe(
+    let roots = skein_core::TlsRoots::default();
+    let probe = crate::probe(
         "localhost",
         port,
         Security::Tls,
-        &skein_core::TlsRoots::default(),
+        &roots,
         Duration::from_millis(300),
-    )
-    .await
-    .unwrap_err();
+    );
+    let error = tokio::time::timeout(Duration::from_secs(30), probe)
+        .await
+        .expect("the probe's own timeout fires")
+        .unwrap_err();
     assert!(matches!(error, MailError::Timeout(_)), "{error:?}");
-    assert!(started.elapsed() < Duration::from_secs(5));
+    assert!(
+        accepted.load(Ordering::SeqCst) >= 1,
+        "the probe reached the server"
+    );
 }

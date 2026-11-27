@@ -1,0 +1,28 @@
+[package]
+name = "rowboat-endpoint-memory"
+description = "rowboat-endpoint over baton-link-memory, for tests and in-process groups"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+readme = "docs/README.md"
+
+[package.metadata.dojo]
+kind = "implementation"
+implements = "rowboat-endpoint"
+
+[dependencies]
+rowboat-endpoint.workspace = true
+baton-identity.workspace = true
+baton-link.workspace = true
+baton-link-memory.workspace = true
+async-trait.workspace = true
+
+[dev-dependencies]
+rowboat-endpoint = { workspace = true, features = ["testing"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+
+[lints]
+workspace = true

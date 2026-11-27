@@ -116,6 +116,26 @@ impl LeaseClient {
         self.server
     }
 
+    /// Asks the server to endorse the lease this node holds on `key` with `fence` (see
+    /// [`crate::Endorse`]): `Ok(None)` when the server does not name this node with that token or
+    /// endorses nothing.
+    pub async fn endorse(
+        &self,
+        group: &GroupId,
+        key: &LeaseKey,
+        fence: baton_core::FencingToken,
+    ) -> Result<Option<Vec<u8>>, LeaseError> {
+        let request = Request::Endorse {
+            group: group.clone(),
+            key: key.clone(),
+            fence,
+        };
+        match self.call(&request).await? {
+            Reply::Endorsement(e) => Ok(e),
+            _ => out_of_protocol(),
+        }
+    }
+
     async fn exchange(
         &self,
         mut s: Box<dyn Duplex>,
@@ -228,6 +248,29 @@ impl Leases for RemoteLeases {
             group: group.clone(),
             key: key.clone(),
             profile: profile.clone(),
+        };
+        match self.client.call(&request).await? {
+            Reply::Lease(l)
+                if matches(&l, group, key) && l.as_ref().is_none_or(|l| l.node == profile.node) =>
+            {
+                Ok(l)
+            }
+            _ => out_of_protocol(),
+        }
+    }
+
+    async fn acquire_above(
+        &self,
+        group: &GroupId,
+        key: &LeaseKey,
+        profile: &NodeProfile,
+        floor: baton_core::FencingToken,
+    ) -> Result<Option<Lease>, LeaseError> {
+        let request = Request::AcquireAbove {
+            group: group.clone(),
+            key: key.clone(),
+            profile: profile.clone(),
+            floor,
         };
         match self.client.call(&request).await? {
             Reply::Lease(l)

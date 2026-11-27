@@ -1,6 +1,7 @@
 [workspace]
 resolver = "3"
 members = [
+  "apps/*",
   "crates/*",
   "tests/integration",
   "tests/load",
@@ -64,6 +65,7 @@ skein-storage-memory = { path = "skein/crates/storage-memory", version = "0.0.0"
 skein-storage-fs = { path = "skein/crates/storage-fs", version = "0.0.0" }
 skein-storage-s3 = { path = "skein/crates/storage-s3", version = "0.0.0" }
 skein-storage-sealed = { path = "skein/crates/storage-sealed", version = "0.0.0" }
+skein-storage-tiered = { path = "skein/crates/storage-tiered", version = "0.0.0" }
 skein-keyring = { path = "skein/crates/keyring", version = "0.0.0" }
 skein-keyring-local = { path = "skein/crates/keyring-local", version = "0.0.0" }
 skein-mail = { path = "skein/crates/mail", version = "0.0.0" }
@@ -99,6 +101,7 @@ skein-throttle = { path = "skein/crates/throttle", version = "0.0.0" }
 rowboat-api = { path = "crates/api" }
 rowboat-keystore = { path = "crates/keystore" }
 rowboat-keystore-memory = { path = "crates/keystore-memory" }
+rowboat-keystore-file = { path = "crates/keystore-file" }
 rowboat-discover = { path = "crates/discover" }
 rowboat-discover-table = { path = "crates/discover-table" }
 rowboat-discover-autoconfig = { path = "crates/discover-autoconfig" }
@@ -110,6 +113,11 @@ rowboat-category = { path = "crates/category" }
 rowboat-category-bento = { path = "crates/category-bento" }
 rowboat-compose = { path = "crates/compose" }
 rowboat-node = { path = "crates/node" }
+rowboat-endpoint = { path = "crates/endpoint" }
+rowboat-endpoint-memory = { path = "crates/endpoint-memory" }
+rowboat-endpoint-iroh = { path = "crates/endpoint-iroh" }
+rowboat-group = { path = "crates/group" }
+rowboat-sync = { path = "crates/sync" }
 
 rinse-mail = { path = "../rinse/crates/mail" }
 rinse-mail-direct = { path = "../rinse/crates/mail-direct" }
@@ -128,6 +136,7 @@ base64 = "0.23"
 blake3 = "1.8.7"
 bytes = { version = "1", features = ["serde"] }
 chacha20poly1305 = "0.11"
+curve25519-dalek = "5"
 clap = { version = "4", features = ["derive", "env"] }
 data-encoding = "2.11"
 ed25519-dalek = { version = "2.2", features = ["rand_core", "serde", "zeroize"] }
@@ -148,6 +157,7 @@ opentelemetry-otlp = { version = "0.33", default-features = false, features = ["
 opentelemetry_sdk = { version = "0.33", features = ["rt-tokio"] }
 postcard = { version = "1.1", default-features = false, features = ["use-std"] }
 proptest = "1"
+qrcodegen = "1.8"
 quick-xml = "0.42"
 rand_core = { version = "0.6.4", features = ["getrandom"] }
 rcgen = { version = "0.14", default-features = false, features = ["aws_lc_rs", "pem"] }

@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -72,9 +72,14 @@ pub struct RunConfig {
     pub maintenance: crate::Maintenance,
     /// Called after every successful run of an account, in order. Empty by default.
     pub observers: Vec<Arc<dyn AccountObserver>>,
+    /// How long shutdown waits for workers to finish what they are doing before aborting them;
+    /// `run` returns only once every worker has been dropped. 30 s by default.
+    pub stop_wait: Duration,
     /// Push subscriptions at providers that call back (Gmail, Graph), when the node has a
     /// public address. Without it, accounts are watched or polled as before.
     pub push: Option<PushConfig>,
+    /// Which live nodes may lead which account; every live node by default.
+    pub eligible: Option<Arc<dyn crate::Eligible>>,
 }
 
 /// How a node keeps provider push subscriptions alive.
@@ -100,12 +105,43 @@ impl RunConfig {
             max_backoff: Duration::from_secs(900),
             maintenance: crate::Maintenance::default(),
             observers: Vec::new(),
+            stop_wait: Duration::from_secs(30),
             push: None,
+            eligible: None,
         }
     }
 }
 
 type Key = (TenantId, AccountId);
+
+#[derive(Default)]
+pub(crate) struct Running(watch::Sender<RunState>);
+
+#[derive(Default)]
+struct RunState {
+    begun: u64,
+    done: u64,
+    live: HashSet<Key>,
+    leaving: HashSet<Key>,
+    ended: bool,
+}
+
+impl Running {
+    pub(crate) fn has(&self, key: &Key) -> bool {
+        let s = self.0.borrow();
+        !s.ended && (s.live.contains(key) || s.leaving.contains(key))
+    }
+
+    pub(crate) async fn let_go(&self, key: &Key) {
+        let mut rx = self.0.subscribe();
+        let target = rx.borrow_and_update().begun + 1;
+        let _ = rx
+            .wait_for(|s| {
+                s.ended || (s.done >= target && !s.live.contains(key) && !s.leaving.contains(key))
+            })
+            .await;
+    }
+}
 
 struct Worker {
     stop: watch::Sender<bool>,
@@ -130,8 +166,14 @@ fn mailboxes(config: &AccountConfig) -> Mailboxes {
 /// The engine stops acting on its leases once its heartbeats have not succeeded for the liveness
 /// time-to-live less a fifth; workers then end and start again after the next successful
 /// heartbeat, and a run still working with a lease taken before the lapse never reaches a provider
-/// again. An account the node should no longer own is released once its worker has stopped,
-/// and on shutdown every lease the node still holds is released.
+/// again. An account the node should no longer own is released once its worker has stopped, in
+/// a task of its own so a slow [`crate::LeaseHooks::releasing`] never delays heartbeats (no new
+/// worker starts for the account until the release is done); so is the lease of a worker that
+/// ended on its own (a lapse) once the node no longer wants its account, which otherwise stayed
+/// in the arbiter's record while the node kept heartbeating; and on shutdown every lease the node
+/// still holds is released. A worker still busy
+/// [`RunConfig::stop_wait`] after shutdown began is aborted; `run` returns once every worker has
+/// been dropped, so nothing it started holds the engine's storage any more.
 pub async fn run(
     engine: Engine,
     directory: Arc<dyn AccountDirectory>,
@@ -139,6 +181,12 @@ pub async fn run(
     shutdown: impl Future<Output = ()>,
 ) {
     let mut workers: HashMap<Key, Worker> = HashMap::new();
+    let mut leaving: Vec<(Key, JoinHandle<()>)> = Vec::new();
+    let mut releasing: tokio::task::JoinSet<Key> = tokio::task::JoinSet::new();
+    let mut released: HashSet<Key> = HashSet::new();
+    let mut ended: HashSet<Key> = HashSet::new();
+    let running = engine.running.clone();
+    running.0.send_modify(|s| s.ended = false);
     engine
         .holding
         .arm(crate::lease::valid_for(config.liveness.ttl_ms()));
@@ -149,13 +197,40 @@ pub async fn run(
             _ = &mut shutdown => break,
             _ = tick.tick() => {}
         }
-        workers.retain(|_, w| !w.handle.is_finished());
+        workers.retain(|k, w| {
+            let done = w.handle.is_finished();
+            if done {
+                ended.insert(k.clone());
+            }
+            !done
+        });
+        running
+            .0
+            .send_modify(|s| s.live.retain(|k| workers.contains_key(k)));
+        let (gone, still): (Vec<_>, Vec<_>) = leaving.drain(..).partition(|(_, h)| h.is_finished());
+        leaving = still;
+        for (key, _) in gone {
+            let engine = engine.clone();
+            released.insert(key.clone());
+            releasing.spawn(async move {
+                engine.release(&key.0, &key.1).await;
+                key
+            });
+        }
+        while let Some(done) = releasing.try_join_next() {
+            if let Ok(key) = done {
+                released.remove(&key);
+                running.0.send_modify(|s| {
+                    s.leaving.remove(&key);
+                });
+            }
+        }
         let started = Instant::now();
         if let Err(e) = config
             .liveness
             .heartbeat(
                 &config.nodes,
-                engine.profile(),
+                &engine.profile(),
                 baton_core::Timestamp::now(),
             )
             .await
@@ -175,6 +250,11 @@ pub async fn run(
                 continue;
             }
         };
+        let mut pass = 0;
+        running.0.send_modify(|s| {
+            s.begun += 1;
+            pass = s.begun;
+        });
         let entries = match directory.accounts().await {
             Ok(e) => e,
             Err(e) => {
@@ -185,32 +265,60 @@ pub async fn run(
         let mut wanted = HashMap::new();
         for entry in entries {
             let key = (entry.config.tenant.clone(), entry.config.account.clone());
+            let candidates: Vec<_> = match &config.eligible {
+                None => alive.clone(),
+                Some(e) => alive
+                    .iter()
+                    .filter(|p| e.may_lead(&key.0, &key.1, &p.node))
+                    .cloned()
+                    .collect(),
+            };
             let mine = preferred(
                 &coordination::group(&key.0),
                 &coordination::lease_key(&key.1),
-                &alive,
+                &candidates,
             )
             .is_some_and(|p| &p.node == engine.node());
             if mine {
                 wanted.insert(key, entry);
             }
         }
-        let leaving: Vec<Key> = workers
+        for key in std::mem::take(&mut ended) {
+            if wanted.contains_key(&key)
+                || workers.contains_key(&key)
+                || released.contains(&key)
+                || leaving.iter().any(|(k, _)| *k == key)
+            {
+                continue;
+            }
+            let engine = engine.clone();
+            released.insert(key.clone());
+            running.0.send_modify(|s| {
+                s.leaving.insert(key.clone());
+            });
+            releasing.spawn(async move {
+                engine.release(&key.0, &key.1).await;
+                key
+            });
+        }
+        let unwanted: Vec<Key> = workers
             .keys()
             .filter(|k| !wanted.contains_key(*k))
             .cloned()
             .collect();
-        for key in leaving {
+        for key in unwanted {
             if let Some(w) = workers.remove(&key) {
                 let _ = w.stop.send(true);
-                let engine = engine.clone();
-                tokio::spawn(async move {
-                    let _ = w.handle.await;
-                    engine.release(&key.0, &key.1).await;
+                running.0.send_modify(|s| {
+                    s.leaving.insert(key.clone());
                 });
+                leaving.push((key, w.handle));
             }
         }
         for (key, entry) in wanted {
+            if leaving.iter().any(|(k, _)| *k == key) || released.contains(&key) {
+                continue;
+            }
             let mailboxes = mailboxes(&entry.config);
             if let Some(w) = workers.get_mut(&key) {
                 if !w.stopping && w.mailboxes != mailboxes {
@@ -231,15 +339,41 @@ pub async fn run(
                 },
             );
         }
+        running.0.send_modify(|s| {
+            s.done = pass;
+            s.live = workers.keys().cloned().collect();
+        });
     }
     info!(workers = workers.len(), "node stopping");
     for w in workers.values() {
         let _ = w.stop.send(true);
     }
-    for (key, w) in workers.drain() {
-        let _ = w.handle.await;
+    let deadline = tokio::time::Instant::now() + config.stop_wait;
+    let ending = workers
+        .drain()
+        .map(|(key, w)| (key, w.handle))
+        .chain(leaving.drain(..));
+    for (key, mut handle) in ending {
+        if tokio::time::timeout_at(deadline, &mut handle)
+            .await
+            .is_err()
+        {
+            warn!(account = %key.1, "a worker did not stop in time; aborted");
+            handle.abort();
+            let _ = handle.await;
+        }
         engine.release(&key.0, &key.1).await;
     }
+    while tokio::time::timeout_at(deadline, releasing.join_next())
+        .await
+        .is_ok_and(|r| r.is_some())
+    {}
+    releasing.abort_all();
+    while releasing.join_next().await.is_some() {}
+    running.0.send_modify(|s| {
+        s.live.clear();
+        s.ended = true;
+    });
 }
 
 async fn worker(
@@ -267,10 +401,12 @@ async fn worker(
         (None, None) => None,
     };
     let mut failures: u32 = 0;
+    let mut epochs = engine.holding.epochs();
     loop {
         if *stop.borrow() {
             return;
         }
+        epochs.borrow_and_update();
         let mut next_due = None;
         let result = async {
             next_due = engine
@@ -312,6 +448,7 @@ async fn worker(
             }
             Err(EngineError::NotOwner) => {
                 debug!(%account, "lost the lease");
+                engine.holding.forget(&entry.config.tenant, &account);
                 return;
             }
             Err(EngineError::Mail(MailError::Throttled { retry_after })) => {
@@ -365,6 +502,7 @@ async fn worker(
                 tokio::time::sleep(Duration::from_secs(2)).await;
             }
             _ = hinted => {}
+            _ = epochs.changed() => {}
         }
     }
 }
@@ -624,5 +762,142 @@ mod observer_tests {
             );
         })
         .await;
+    }
+
+    struct Switch(AccountEntry, std::sync::atomic::AtomicBool);
+
+    #[async_trait]
+    impl AccountDirectory for Switch {
+        async fn accounts(&self) -> Result<Vec<AccountEntry>, EngineError> {
+            if self.1.load(std::sync::atomic::Ordering::SeqCst) {
+                Ok(vec![self.0.clone()])
+            } else {
+                Ok(Vec::new())
+            }
+        }
+    }
+
+    async fn eventually<F: FnMut() -> bool>(mut f: F) {
+        while !f() {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn letting_go_waits_for_a_busy_worker_and_its_release() {
+        let storage = Storage::over(Arc::new(MemoryObjects::new()));
+        let (leases, liveness) = leases_over(Arc::new(MemoryState::new()), 60_000, None);
+        let engine = Engine::new(storage.clone(), leases.clone(), signal(), profile("n1"));
+        let handle = engine.clone();
+        let fake = FakeMail::new();
+        fake.fill("INBOX", 3, 100);
+        let tenant = TenantId::new("t").unwrap();
+        let account = AccountId::new("box").unwrap();
+        let directory = Arc::new(Switch(
+            AccountEntry {
+                config: AccountConfig::new(tenant.clone(), account.clone()),
+                provider: Arc::new(fake.clone()),
+                pim: None,
+            },
+            std::sync::atomic::AtomicBool::new(true),
+        ));
+        let mut config = RunConfig::new(liveness);
+        config.heartbeat = Duration::from_millis(10);
+        config.interval = Duration::from_secs(3600);
+        let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+        let switch = directory.clone();
+        let runner = tokio::spawn(run(engine, directory, config, async move {
+            let _ = stopped.await;
+        }));
+        let group = coordination::group(&tenant);
+        let key = coordination::lease_key(&account);
+        let watched = storage.clone();
+        let (t, a) = (tenant.clone(), account.clone());
+        let mut head = 0;
+        while head < 3 {
+            head = watched.log.head(&t, &a).await.unwrap().0;
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+
+        let hold = fake.hold();
+        fake.fill("INBOX", 1, 100);
+        eventually(|| fake.waiting() == 1).await;
+        switch.1.store(false, std::sync::atomic::Ordering::SeqCst);
+        let begun = handle.running.0.borrow().begun;
+        let waiter = {
+            let (h, t, a) = (handle.clone(), tenant.clone(), account.clone());
+            tokio::spawn(async move { h.let_go(&t, &a).await })
+        };
+        eventually(|| handle.running.0.borrow().done >= begun + 3).await;
+        assert!(
+            !waiter.is_finished(),
+            "the worker is still inside a session of the removed account"
+        );
+        assert!(
+            handle
+                .running
+                .0
+                .borrow()
+                .leaving
+                .contains(&(tenant.clone(), account.clone()))
+        );
+        assert_eq!(
+            leases.holder(&group, &key).await.unwrap().map(|l| l.node),
+            Some(skein_core::NodeId::new("n1").unwrap())
+        );
+
+        drop(hold);
+        waiter.await.unwrap();
+        assert!(
+            leases.holder(&group, &key).await.unwrap().is_none(),
+            "the lease is released before letting go resolves"
+        );
+        handle.let_go(&tenant, &account).await;
+        let _ = stop.send(());
+        runner.await.unwrap();
+        handle.let_go(&tenant, &account).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_worker_stuck_past_the_stop_wait_is_dropped_before_run_returns() {
+        let storage = Storage::over(Arc::new(MemoryObjects::new()));
+        let (leases, liveness) = leases_over(Arc::new(MemoryState::new()), 60_000, None);
+        let engine = Engine::new(storage.clone(), leases.clone(), signal(), profile("n1"));
+        let fake = FakeMail::new();
+        fake.fill("INBOX", 1, 100);
+        let (directory, tenant, account) = one_account(&fake);
+        let mut config = RunConfig::new(liveness);
+        config.heartbeat = Duration::from_millis(10);
+        config.interval = Duration::from_secs(3600);
+        config.stop_wait = Duration::from_millis(50);
+        let watched = storage.clone();
+        let (t, a) = (tenant.clone(), account.clone());
+        let held = fake.clone();
+        run(engine, directory, config, async move {
+            while watched.log.head(&t, &a).await.unwrap().0 < 1 {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+            let hold = held.hold();
+            held.fill("INBOX", 1, 100);
+            eventually(|| held.waiting() == 1).await;
+            std::mem::forget(hold);
+        })
+        .await;
+        assert_eq!(
+            fake.waiting(),
+            0,
+            "the stuck session was dropped with its worker"
+        );
+        assert!(
+            leases
+                .holder(
+                    &coordination::group(&tenant),
+                    &coordination::lease_key(&account)
+                )
+                .await
+                .unwrap()
+                .is_none(),
+            "its lease is released"
+        );
     }
 }

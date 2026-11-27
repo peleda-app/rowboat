@@ -1,3 +1,4 @@
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -815,24 +816,32 @@ async fn probes_refuse_plain_servers_bad_certificates_and_silence() {
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let silent = listener.local_addr().unwrap().port();
+    let accepted = Arc::new(AtomicUsize::new(0));
+    let count = accepted.clone();
     tokio::spawn(async move {
         let mut open = Vec::new();
         while let Ok((socket, _)) = listener.accept().await {
+            count.fetch_add(1, Ordering::SeqCst);
             open.push(socket);
         }
     });
-    let started = std::time::Instant::now();
-    let timed_out = crate::probe(
+    let roots = ca.roots();
+    let probe = crate::probe(
         "localhost",
         silent,
         Security::Tls,
-        &ca.roots(),
+        &roots,
         Duration::from_millis(300),
-    )
-    .await;
+    );
+    let timed_out = tokio::time::timeout(Duration::from_secs(30), probe)
+        .await
+        .expect("the probe's own timeout fires");
     assert!(
         matches!(timed_out, Err(SendError::Timeout(_))),
         "{timed_out:?}"
     );
-    assert!(started.elapsed() < Duration::from_secs(5));
+    assert!(
+        accepted.load(Ordering::SeqCst) >= 1,
+        "the probe reached the server"
+    );
 }

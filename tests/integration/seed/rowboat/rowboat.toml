@@ -1,0 +1,23 @@
+# The server container of the node suite: tenants on tmpfs, links on the published UDP ports, the
+# stack's test CA for the mail servers (an image built with the test-roots feature).
+data_dir = "/data"
+secrets_dir = "/secrets"
+cache_dir = "/cache"
+first_run_invite = false
+
+[link]
+ports = "49400-49409"
+advertise = ["127.0.0.1"]
+
+[listener]
+listen = "0.0.0.0:8080"
+
+[logs]
+filter = "info"
+json = false
+
+[shutdown]
+handback_secs = 5
+
+[tls]
+test_ca = "/certs/ca.crt"

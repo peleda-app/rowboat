@@ -36,8 +36,8 @@ use skein_mail::MailError;
 use skein_storage::{Storage, StorageError};
 
 pub use collections::{CollectionReport, CollectionsError, CollectionsReport};
-pub use commands::{CommandReport, SendPolicy, SenderDirectory};
-pub use lease::{NODES_GROUP, OneGroupLiveness, node_profile};
+pub use commands::{CommandReport, SendPolicy, SenderDirectory, presume_started};
+pub use lease::{Eligible, LeaseHooks, NODES_GROUP, OneGroupLiveness, node_profile};
 pub use message_id::ORIGINAL_MESSAGE_ID;
 pub use run::{
     AccountDirectory, AccountEntry, AccountObserver, ObserverError, PushConfig, RunConfig, run,
@@ -122,7 +122,10 @@ pub struct Engine {
     pub(crate) leases: Arc<dyn Leases>,
     pub(crate) signal: Arc<dyn Signal>,
     pub(crate) profile: NodeProfile,
+    pub(crate) can_run: Arc<std::sync::atomic::AtomicBool>,
+    pub(crate) hooks: Option<Arc<dyn LeaseHooks>>,
     pub(crate) holding: Arc<lease::Holding>,
+    pub(crate) running: Arc<run::Running>,
     pub(crate) senders: Option<Arc<dyn SenderDirectory>>,
     pub(crate) send_policy: SendPolicy,
     pub(crate) inspect_messages: bool,
@@ -145,8 +148,11 @@ impl Engine {
             storage,
             leases,
             signal,
+            can_run: Arc::new(std::sync::atomic::AtomicBool::new(profile.can_run)),
             profile,
+            hooks: None,
             holding: Arc::new(lease::Holding::default()),
+            running: Arc::default(),
             senders: None,
             send_policy: SendPolicy::default(),
             inspect_messages: true,
@@ -172,17 +178,66 @@ impl Engine {
         &self.profile.node
     }
 
-    /// The profile it acquires leases and heartbeats with.
-    pub fn profile(&self) -> &NodeProfile {
-        &self.profile
+    /// The profile it acquires leases and heartbeats with, `can_run` as last set by
+    /// [`Engine::set_can_run`].
+    pub fn profile(&self) -> NodeProfile {
+        NodeProfile {
+            can_run: self.can_run.load(std::sync::atomic::Ordering::SeqCst),
+            ..self.profile.clone()
+        }
+    }
+
+    /// Announces from the next heartbeat on whether this node can run work now (false for a phone
+    /// about to be suspended, or a server asked to stop leading). A node that cannot run takes no
+    /// lease, and under [`run`] stops its workers and releases what it holds; clones share it.
+    pub fn set_can_run(&self, can_run: bool) {
+        self.can_run
+            .store(can_run, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Calls `hooks` when this node takes or gives up an account's lease.
+    pub fn with_lease_hooks(mut self, hooks: Arc<dyn LeaseHooks>) -> Self {
+        self.hooks = Some(hooks);
+        self
+    }
+
+    /// Whether this node may act on the account's lease now: it took or renewed it since its
+    /// heartbeats last lapsed, and has not released it.
+    pub fn holds_lease(&self, tenant: &TenantId, account: &AccountId) -> bool {
+        self.holding.holds_any(tenant, account)
+    }
+
+    /// Ends the current holding epoch now, as a lapse of heartbeats does: no lease taken before
+    /// is acted on again, a run working under one stops at its next check, and nothing is acted
+    /// on until the next successful heartbeat. For a node whose arbiter changed, since the new one
+    /// knows nothing of the leases the old one granted.
+    pub fn lapse(&self) {
+        self.holding.lapse();
+    }
+
+    /// Whether [`run`] keeps a worker for the account, or is still releasing its lease.
+    pub fn has_worker(&self, tenant: &TenantId, account: &AccountId) -> bool {
+        self.running.has(&(tenant.clone(), account.clone()))
     }
 
     /// The storage it writes to.
     pub fn storage(&self) -> &Storage {
         &self.storage
     }
+
+    /// Resolves once [`run`] has finished a pass over the directory that began after this call
+    /// and has no worker for the account left, the lease of a stopped worker released; or once
+    /// `run` has returned. Called before `run` starts, it waits for it. An account paused or
+    /// removed in the directory before the call is not synced again once this resolves.
+    pub async fn let_go(&self, tenant: &TenantId, account: &AccountId) {
+        self.running
+            .let_go(&(tenant.clone(), account.clone()))
+            .await;
+    }
 }
 
+#[cfg(test)]
+mod handover_tests;
 #[cfg(test)]
 mod test_support;
 #[cfg(test)]

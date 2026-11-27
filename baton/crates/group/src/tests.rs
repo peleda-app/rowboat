@@ -628,6 +628,164 @@ fn the_chain_cannot_be_rewritten_and_forks_are_detected() {
 }
 
 #[test]
+fn a_certificate_assembled_from_a_remote_proof_verifies() {
+    let mut w = world();
+    let phone = Device::new();
+    let proof = NodeCert::node_proof(
+        &phone.id,
+        &phone.kem.public(),
+        NodeClass::Phone,
+        &w.owner.public(),
+        LATER,
+    );
+    let cert = NodeCert::assemble(
+        &w.owner,
+        phone.id.public(),
+        phone.kem.public(),
+        NodeClass::Phone,
+        LATER,
+        proof,
+    )
+    .unwrap();
+    w.log
+        .append(&w.laptop.id, Op::CertifyNode { cert }, T)
+        .unwrap();
+    assert!(w.log.state().node(&phone.id.public(), T).is_some());
+
+    let other = Device::new();
+    let proof = NodeCert::node_proof(
+        &other.id,
+        &other.kem.public(),
+        NodeClass::Phone,
+        &w.owner.public(),
+        LATER,
+    );
+    for (class, expires) in [(NodeClass::Server, LATER), (NodeClass::Phone, T)] {
+        assert_eq!(
+            NodeCert::assemble(
+                &w.owner,
+                other.id.public(),
+                other.kem.public(),
+                class,
+                expires,
+                proof
+            ),
+            Err(GroupError::BadSignature),
+            "a proof covers exactly the terms the node signed"
+        );
+    }
+    assert_eq!(
+        NodeCert::assemble(
+            &w.owner,
+            Identity::generate().public(),
+            other.kem.public(),
+            NodeClass::Phone,
+            LATER,
+            proof
+        ),
+        Err(GroupError::BadSignature),
+        "a proof by another key"
+    );
+}
+
+#[test]
+fn renewal_moves_the_expiry_and_nothing_else() {
+    let mut w = world();
+    let later = Timestamp(LATER.0 + 1_000);
+    let renewed = NodeCert::new(
+        &w.owner,
+        &w.laptop.id,
+        w.laptop.kem.public(),
+        NodeClass::Desktop,
+        later,
+    );
+    w.log
+        .append(&w.laptop.id, Op::RenewNode { cert: renewed }, T)
+        .unwrap();
+    assert!(w.log.state().node(&w.laptop.id.public(), later).is_some());
+
+    for (kem, class, expires) in [
+        (
+            KemSecret::generate().public(),
+            NodeClass::Desktop,
+            Timestamp(later.0 + 1),
+        ),
+        (
+            w.laptop.kem.public(),
+            NodeClass::Server,
+            Timestamp(later.0 + 1),
+        ),
+        (w.laptop.kem.public(), NodeClass::Desktop, later),
+        (w.laptop.kem.public(), NodeClass::Desktop, LATER),
+    ] {
+        let cert = NodeCert::new(&w.owner, &w.laptop.id, kem, class, expires);
+        assert!(matches!(
+            w.log.append(&w.laptop.id, Op::RenewNode { cert }, T),
+            Err(GroupError::Invalid(_))
+        ));
+    }
+
+    let stranger = Device::new();
+    let cert = stranger.cert(&w.owner);
+    assert!(
+        matches!(
+            w.log.append(&w.laptop.id, Op::RenewNode { cert }, T),
+            Err(GroupError::Invalid(_))
+        ),
+        "only certified nodes are renewed"
+    );
+
+    let phone = Device::new();
+    w.log
+        .append(
+            &w.laptop.id,
+            Op::CertifyNode {
+                cert: phone.cert(&w.owner),
+            },
+            T,
+        )
+        .unwrap();
+    w.log
+        .append(
+            &w.laptop.id,
+            Op::RevokeNode {
+                node: phone.id.public(),
+            },
+            T,
+        )
+        .unwrap();
+    let cert = NodeCert::new(
+        &w.owner,
+        &phone.id,
+        phone.kem.public(),
+        NodeClass::Desktop,
+        later,
+    );
+    assert!(
+        matches!(
+            w.log.append(&w.laptop.id, Op::RenewNode { cert }, T),
+            Err(GroupError::Invalid(_))
+        ),
+        "a revoked node is never renewed"
+    );
+
+    let other_member = Identity::generate();
+    let cert = NodeCert::new(
+        &other_member,
+        &w.laptop.id,
+        w.laptop.kem.public(),
+        NodeClass::Desktop,
+        Timestamp(later.0 + 5),
+    );
+    assert!(
+        w.log
+            .append(&w.laptop.id, Op::RenewNode { cert }, T)
+            .is_err(),
+        "a renewal by another member key"
+    );
+}
+
+#[test]
 fn checkpoints_and_recovery_rotation_need_the_right_keys() {
     let mut w = world();
     let r = w.log.append(&w.laptop.id, Op::Checkpoint, T);
@@ -961,4 +1119,101 @@ proptest::proptest! {
     fn arbitrary_bytes_never_decode_into_a_valid_entry(raw in proptest::collection::vec(proptest::prelude::any::<u8>(), 0..2000)) {
         proptest::prop_assert!(Entry::decode(&raw).is_err());
     }
+}
+
+#[test]
+fn a_server_holds_only_node_grants_and_no_member_authority() {
+    let mut w = world();
+    let r = res("vault-1");
+    w.log
+        .append(
+            &w.laptop.id,
+            Op::CreateResource {
+                resource: r.clone(),
+            },
+            T,
+        )
+        .unwrap();
+    let server = Device::new();
+    let cert = NodeCert::new(
+        &w.owner,
+        &server.id,
+        server.kem.public(),
+        NodeClass::Server,
+        LATER,
+    );
+    w.log
+        .append(&w.laptop.id, Op::CertifyNode { cert }, T)
+        .unwrap();
+    let s = server.id.public();
+    assert!(
+        w.log.state().capabilities(&r, &s, T).is_empty(),
+        "a member grant does not reach the member's servers"
+    );
+    assert!(
+        !w.log
+            .state()
+            .required_recipients(&r, T)
+            .contains_key(&server.recipient())
+    );
+    w.log
+        .append(
+            &w.laptop.id,
+            Op::Grant {
+                resource: r.clone(),
+                principal: Principal::Node(s),
+                capabilities: caps(&[Capability::Read, Capability::Lead]),
+            },
+            T,
+        )
+        .unwrap();
+    assert_eq!(
+        w.log.state().capabilities(&r, &s, T),
+        caps(&[Capability::Read, Capability::Lead])
+    );
+
+    let attacker = Identity::generate();
+    let forged = [
+        Op::AddMember {
+            member: attacker.public(),
+            recovery: RecoveryRoot::generate().public(),
+            role: Role::Owner,
+        },
+        Op::RemoveMember {
+            member: w.owner.public(),
+        },
+        Op::RevokeNode {
+            node: w.laptop.id.public(),
+        },
+        Op::CreateResource {
+            resource: res("vault-2"),
+        },
+        Op::CertifyNode {
+            cert: Device::new().cert(&w.owner),
+        },
+        Op::Grant {
+            resource: r.clone(),
+            principal: Principal::Node(s),
+            capabilities: caps(&[Capability::Read, Capability::Lead, Capability::Admin]),
+        },
+        Op::Grant {
+            resource: r.clone(),
+            principal: Principal::Member(w.owner.public()),
+            capabilities: caps(&[Capability::Read]),
+        },
+    ];
+    for op in forged {
+        let label = format!("{op:?}");
+        assert!(
+            matches!(
+                w.log.append(&server.id, op, T),
+                Err(GroupError::NotAuthorized(_))
+            ),
+            "{label}"
+        );
+    }
+    w.log
+        .append(&server.id, Op::RevokeNode { node: s }, T)
+        .unwrap();
+    assert!(w.log.state().node(&s, T).is_none());
 }

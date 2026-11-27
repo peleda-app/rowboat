@@ -27,6 +27,10 @@ mod clock;
 mod discovery;
 mod errors;
 mod events;
+mod fallback;
+mod group;
+mod handover;
+mod leases;
 mod notify;
 mod overlay;
 mod parser;
@@ -35,10 +39,14 @@ mod providers;
 mod random;
 pub mod records;
 mod run;
+mod sync;
+mod tasks;
 #[cfg(feature = "testing")]
 pub mod testing;
 
-pub use boot::{BuildError, KEY_NAMES, Node, NodeBuilder, Profile, TestTiming};
+pub use boot::{BuildError, KEY_NAMES, Node, NodeBuilder, Profile, Push, RevokedHook, TestTiming};
 pub use clock::{Clock, ManualClock, SystemClock};
+pub use fallback::{FallbackTiming, fuzz_leaving};
+pub use group::ServerInvite;
 pub use probe::ServerProber;
 pub use providers::{ImapSmtp, Providers};

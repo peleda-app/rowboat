@@ -16,6 +16,7 @@ const T: Timestamp = Timestamp(1_700_000_000_000);
 const LATER: Timestamp = Timestamp(1_800_000_000_000);
 
 struct W {
+    laptop: Identity,
     server: Identity,
     alice: Identity,
     alice_phone: Identity,
@@ -100,9 +101,20 @@ fn w() -> W {
         T,
     )
     .unwrap();
+    log.append(
+        &laptop,
+        Op::Grant {
+            resource: res(),
+            principal: Principal::Node(server.public()),
+            capabilities: [Capability::Read, Capability::Lead].into(),
+        },
+        T,
+    )
+    .unwrap();
     let (op, keys) = epochs::new_epoch(log.state(), &res(), T).unwrap();
     log.append(&laptop, op, T).unwrap();
     W {
+        laptop,
         server,
         alice,
         alice_phone,
@@ -235,7 +247,7 @@ fn a_command_from_a_revoked_node_is_refused_after_the_revocation_is_known() {
     let c = Command::issue(&w.alice_phone, &w.log, flag(&w.key, &r, b"x"), T, 60_000).unwrap();
     let mut log = GroupLog::verify(w.log.entries().to_vec()).unwrap();
     log.append(
-        &w.server,
+        &w.laptop,
         Op::RevokeNode {
             node: w.alice_phone.public(),
         },
@@ -451,7 +463,7 @@ mod review {
         let other = ResourceId::new("other").unwrap();
         w.log
             .append(
-                &w.server,
+                &w.laptop,
                 Op::CreateResource {
                     resource: other.clone(),
                 },
@@ -463,7 +475,7 @@ mod review {
             .collect();
         w.log
             .append(
-                &w.server,
+                &w.laptop,
                 Op::Grant {
                     resource: other.clone(),
                     principal: Principal::Member(w.alice.public()),
@@ -473,7 +485,7 @@ mod review {
             )
             .unwrap();
         let (op, other_keys) = epochs::new_epoch(w.log.state(), &other, T).unwrap();
-        w.log.append(&w.server, op, T).unwrap();
+        w.log.append(&w.laptop, op, T).unwrap();
         let c = Command::issue(&w.alice_phone, &w.log, flag(&w.key, &r, b"x"), T, 60_000).unwrap();
         let moved = resign(&w, c.clone(), |b| {
             b.resource = other.clone();

@@ -279,6 +279,17 @@ impl Leases for Routed {
         n.leases.acquire(group, key, profile).await
     }
 
+    async fn acquire_above(
+        &self,
+        group: &GroupId,
+        key: &LeaseKey,
+        profile: &NodeProfile,
+        floor: baton_core::FencingToken,
+    ) -> Result<Option<Lease>, LeaseError> {
+        let n = self.get(&profile.node).await;
+        n.leases.acquire_above(group, key, profile, floor).await
+    }
+
     async fn request_takeover(
         &self,
         group: &GroupId,
@@ -346,6 +357,142 @@ impl Harness for Routed {
 async fn lease_suite_through_the_server() {
     let routed = Routed::new(Net::new(config()).await);
     testing::leases(routed.clone(), routed).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn floor_suite_through_the_server() {
+    let routed = Routed::new(Net::new(config()).await);
+    testing::floors(routed.clone(), routed).await;
+}
+
+struct Stamp;
+
+impl Endorse for Stamp {
+    fn endorse(&self, lease: &Lease) -> Option<Vec<u8>> {
+        if lease.key.as_str() == "huge" {
+            return Some(vec![0; wire::MAX_ENDORSEMENT + 1]);
+        }
+        Some(format!("{}:{}:{}", lease.key, lease.node, lease.fence.0).into_bytes())
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn only_the_holder_gets_its_lease_endorsed() {
+    let net = Net::new(ServerConfig {
+        endorse: Some(Arc::new(Stamp)),
+        ..config()
+    })
+    .await;
+    let a = net.node("node-a", NodeClass::Desktop).await;
+    let b = net.node("node-b", NodeClass::Desktop).await;
+    a.seen().await;
+    b.seen().await;
+    let lease = a.take("k").await.unwrap().unwrap();
+    let client = LeaseClient::connect(a.link.clone(), net.server_key(), ClientConfig::default())
+        .await
+        .unwrap();
+    let got = client.endorse(&g(), &key("k"), lease.fence).await.unwrap();
+    assert_eq!(
+        got,
+        Some(format!("k:node-a:{}", lease.fence.0).into_bytes())
+    );
+    assert_eq!(
+        net.server
+            .lock()
+            .await
+            .as_ref()
+            .unwrap()
+            .endorse(&lease)
+            .await,
+        got,
+        "the server's own process gets the same"
+    );
+    assert_eq!(
+        client
+            .endorse(&g(), &key("k"), baton_core::FencingToken(lease.fence.0 + 1))
+            .await
+            .unwrap(),
+        None,
+        "another token is not endorsed"
+    );
+    let other = LeaseClient::connect(b.link.clone(), net.server_key(), ClientConfig::default())
+        .await
+        .unwrap();
+    assert_eq!(
+        other.endorse(&g(), &key("k"), lease.fence).await.unwrap(),
+        None,
+        "a node that does not hold the lease gets nothing"
+    );
+    let forged = Lease {
+        node: NodeId::new("node-b").unwrap(),
+        ..lease.clone()
+    };
+    assert_eq!(
+        net.server
+            .lock()
+            .await
+            .as_ref()
+            .unwrap()
+            .endorse(&forged)
+            .await,
+        None
+    );
+    let huge = a.take("huge").await.unwrap().unwrap();
+    assert_eq!(
+        client
+            .endorse(&g(), &key("huge"), huge.fence)
+            .await
+            .unwrap(),
+        None,
+        "an endorsement over the limit is never sent"
+    );
+    net.rules.denied_keys.lock().unwrap().insert("k".into());
+    assert!(denied(client.endorse(&g(), &key("k"), lease.fence).await));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn without_an_endorser_nothing_is_endorsed() {
+    let net = Net::new(config()).await;
+    let a = net.node("node-a", NodeClass::Desktop).await;
+    a.seen().await;
+    let lease = a.take("k").await.unwrap().unwrap();
+    let client = LeaseClient::connect(a.link.clone(), net.server_key(), ClientConfig::default())
+        .await
+        .unwrap();
+    assert_eq!(
+        client.endorse(&g(), &key("k"), lease.fence).await.unwrap(),
+        None
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_server_reports_the_last_heartbeat_on_its_clock() {
+    let net = Net::new(config()).await;
+    let a = net.node("node-a", NodeClass::Desktop).await;
+    let node = NodeId::new("node-a").unwrap();
+    assert_eq!(
+        net.server
+            .lock()
+            .await
+            .as_ref()
+            .unwrap()
+            .last_heartbeat(&g(), &node)
+            .await,
+        None
+    );
+    net.advance(42);
+    a.beat(&g()).await.unwrap();
+    assert_eq!(
+        net.server
+            .lock()
+            .await
+            .as_ref()
+            .unwrap()
+            .last_heartbeat(&g(), &node)
+            .await,
+        Some(net.at()),
+        "the client's own time is ignored"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -569,31 +716,34 @@ async fn slow_and_idle_streams_are_closed_and_free_their_slot() {
     let (id, link) = net.peer("node-s");
 
     let mut slow = net.raw(&link).await;
+    let started = tokio::time::Instant::now();
     slow.write_all(&[0, 0]).await.unwrap();
     let blocked = LeaseClient::connect(link.clone(), net.server_key(), ClientConfig::default());
     assert!(
         unavailable(blocked.await),
         "the slow stream holds the peer's only slot"
     );
-    let started = tokio::time::Instant::now();
     assert!(closed(&mut slow).await);
-    assert!(started.elapsed() <= Duration::from_millis(2_100));
+    assert_eq!(started.elapsed(), Duration::from_secs(2));
 
     let mut drip = net.raw(&link).await;
     let started = tokio::time::Instant::now();
-    for b in [0u8, 0, 0, 2] {
-        if drip.write_all(&[b]).await.is_err() {
-            break;
-        }
+    drip.write_all(&[0, 0, 0, 3]).await.unwrap();
+    for _ in 0..2 {
         tokio::time::sleep(Duration::from_millis(900)).await;
+        drip.write_all(&[0]).await.unwrap();
     }
     assert!(closed(&mut drip).await, "a frame dripped too slowly");
-    assert!(started.elapsed() <= Duration::from_millis(3_700));
+    assert_eq!(
+        started.elapsed(),
+        Duration::from_secs(2),
+        "the deadline runs from the first byte and covers the body"
+    );
 
     let mut idle = net.raw(&link).await;
     let started = tokio::time::Instant::now();
     assert!(closed(&mut idle).await);
-    assert!(started.elapsed() >= Duration::from_secs(60));
+    assert_eq!(started.elapsed(), Duration::from_secs(60));
 
     let client = LeaseClient::connect(link, net.server_key(), ClientConfig::default())
         .await
@@ -872,4 +1022,58 @@ async fn a_restart_with_a_shorter_ttl_never_lets_two_nodes_hold_at_once() {
         until <= started + Duration::from_millis(5_000) + Duration::from_millis(500),
         "self-expiry follows the shorter time-to-live at once"
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_server_that_starts_arbitrating_grants_only_renewals_for_its_grace() {
+    let net = Net::new(ServerConfig {
+        ttl_ms: 5_000,
+        grace_ms: 5_000,
+        ..config()
+    })
+    .await;
+    let a = net.node("a", NodeClass::Desktop).await;
+    let b = net.node("b", NodeClass::Server).await;
+    a.seen().await;
+    b.seen().await;
+    assert!(
+        a.take("k").await.unwrap().is_none(),
+        "a key with no holder is not granted during the grace"
+    );
+    assert!(
+        b.take("k").await.unwrap().is_none(),
+        "nor to a stronger node"
+    );
+    let own = net.server.lock().await.as_ref().unwrap().leases();
+    assert!(
+        own.acquire(&g(), &key("k"), &b.me).await.unwrap().is_none(),
+        "nor through the server's own leases"
+    );
+    net.advance(4_999);
+    a.seen().await;
+    assert!(a.take("k").await.unwrap().is_none());
+    net.advance(1);
+    a.seen().await;
+    let held = a
+        .take("k")
+        .await
+        .unwrap()
+        .expect("granted once the grace is over");
+
+    net.stop().await;
+    net.start(ServerConfig {
+        ttl_ms: 5_000,
+        grace_ms: 5_000,
+        ..config()
+    })
+    .await;
+    a.seen().await;
+    b.seen().await;
+    let renewed = a
+        .take("k")
+        .await
+        .unwrap()
+        .expect("the holder its record names renews during the grace");
+    assert_eq!(renewed.fence, held.fence);
+    assert!(b.take("k").await.unwrap().is_none());
 }

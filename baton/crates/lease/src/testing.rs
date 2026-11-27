@@ -314,6 +314,75 @@ async fn many_keys<H: Harness + 'static>(leases: &Arc<dyn Leases>, g: &GroupId, 
     assert_eq!(holders.len(), 100, "every key found a holder");
 }
 
+/// [`Leases::acquire_above`] for implementations that honour floors: a new grant and a renewal
+/// both come above the floor, a renewal above the floor keeps its token, a floor never lowers a
+/// token, and a live holder is still never replaced. Uses the group `conf-floor`.
+pub async fn floors<H: Harness + 'static>(leases: Arc<dyn Leases>, harness: Arc<H>) {
+    let g = GroupId::new("conf-floor").unwrap();
+    let k = LeaseKey::new("floor").unwrap();
+    let a = profile("floor-a", NodeClass::Desktop);
+    let b = profile("floor-b", NodeClass::Server);
+    harness.alive(&a).await;
+    harness.alive(&b).await;
+    let first = leases
+        .acquire(&g, &k, &a)
+        .await
+        .unwrap()
+        .expect("a free key is granted");
+    let floor = FencingToken(first.fence.0 + 1_000_000);
+    let above = leases
+        .acquire_above(&g, &k, &a, floor)
+        .await
+        .unwrap()
+        .expect("the holder renews");
+    assert_eq!(above.node, a.node);
+    assert!(
+        above.fence > floor,
+        "a renewal below the floor gets a new token above it"
+    );
+    let again = leases
+        .acquire_above(&g, &k, &a, floor)
+        .await
+        .unwrap()
+        .expect("the holder renews");
+    assert_eq!(
+        again.fence, above.fence,
+        "a renewal above the floor keeps it"
+    );
+    let at = leases
+        .acquire_above(&g, &k, &a, above.fence)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(at.fence, above.fence, "a renewal at the floor keeps it");
+    let low = leases
+        .acquire_above(&g, &k, &a, FencingToken(1))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(low.fence, above.fence, "a low floor never lowers a token");
+    assert!(
+        leases
+            .acquire_above(&g, &k, &b, FencingToken(above.fence.0 + 5))
+            .await
+            .unwrap()
+            .is_none(),
+        "a floor never replaces a live holder"
+    );
+    leases.release(&again).await.unwrap();
+    let k2 = LeaseKey::new("floor-fresh").unwrap();
+    let fresh_floor = FencingToken(above.fence.0 + 7_000_000);
+    let fresh = leases
+        .acquire_above(&g, &k2, &b, fresh_floor)
+        .await
+        .unwrap()
+        .expect("a free key is granted");
+    assert!(
+        fresh.fence > fresh_floor,
+        "a new grant comes above the floor"
+    );
+}
+
 /// The [`Liveness`] contract. The implementation's time-to-live must equal `ttl_ms()` and be at
 /// least 4 ms.
 pub async fn liveness(live: Arc<dyn Liveness>) {

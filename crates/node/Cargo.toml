@@ -15,6 +15,7 @@ kind = "library"
 [features]
 testing = [
   "dep:rowboat-keystore-memory",
+  "dep:rowboat-endpoint-memory",
   "dep:rinse-mail-direct",
   "dep:tempfile",
   "skein-mail/testing",
@@ -54,13 +55,25 @@ skein-send.workspace = true
 skein-send-smtp.workspace = true
 skein-view.workspace = true
 skein-oauth.workspace = true
+skein-push.workspace = true
 baton-core.workspace = true
+baton-group.workspace = true
 baton-identity.workspace = true
+baton-keys.workspace = true
+baton-link.workspace = true
+baton-link-iroh.workspace = true
+rowboat-group.workspace = true
+rowboat-sync.workspace = true
+skein-storage-tiered.workspace = true
+rowboat-endpoint.workspace = true
+rowboat-endpoint-iroh.workspace = true
 baton-lease.workspace = true
 baton-lease-cas.workspace = true
+baton-lease-server.workspace = true
 baton-signal.workspace = true
 baton-signal-local.workspace = true
 baton-state.workspace = true
+baton-state-memory.workspace = true
 async-trait.workspace = true
 blake3.workspace = true
 bytes.workspace = true
@@ -74,11 +87,13 @@ tokio = { workspace = true, features = ["sync", "time", "rt", "macros"] }
 tracing.workspace = true
 zeroize.workspace = true
 rowboat-keystore-memory = { workspace = true, optional = true }
+rowboat-endpoint-memory = { workspace = true, optional = true }
 rinse-mail-direct = { workspace = true, optional = true }
 tempfile = { workspace = true, optional = true }
 
 [dev-dependencies]
 rowboat-api = { workspace = true, features = ["testing"] }
+rowboat-endpoint-memory.workspace = true
 rowboat-discover = { workspace = true, features = ["testing"] }
 skein-core = { workspace = true, features = ["testing"] }
 rowboat-keystore-memory.workspace = true
@@ -94,6 +109,18 @@ tracing-subscriber.workspace = true
 
 [[test]]
 name = "e2e"
+required-features = ["testing"]
+
+[[test]]
+name = "group"
+required-features = ["testing"]
+
+[[test]]
+name = "replication"
+required-features = ["testing"]
+
+[[test]]
+name = "handover"
 required-features = ["testing"]
 
 [[test]]

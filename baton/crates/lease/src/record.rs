@@ -176,6 +176,24 @@ pub fn acquire(
     view: &View<'_>,
     next_fence: &dyn Fn(u64) -> Option<u64>,
 ) -> Result<Step, LeaseError> {
+    acquire_above(current, group, key, profile, view, 0, next_fence)
+}
+
+/// The `acquire` rule with a floor: a new grant carries a token above `floor`, and a renewal by
+/// the holder whose token is below `floor` is granted again with a new token above it (same
+/// holder, same takeover state), so a holder whose storage already saw a higher token from
+/// another arbiter can write again. A renewal at the floor keeps its token (the holder's own
+/// storage carries it). Callers bound `floor` themselves (see
+/// `Leases::acquire_above`).
+pub fn acquire_above(
+    current: Option<&LeaseRecord>,
+    group: &GroupId,
+    key: &LeaseKey,
+    profile: &NodeProfile,
+    view: &View<'_>,
+    floor: u64,
+    next_fence: &dyn Fn(u64) -> Option<u64>,
+) -> Result<Step, LeaseError> {
     if !profile.may_lead() {
         return Ok(Step::Reply(Reply::Lease(None)));
     }
@@ -185,14 +203,17 @@ pub fn acquire(
         Step::Write(r, Reply::Lease(lease))
     };
     let Some(r) = current else {
-        return Ok(grant(bump(next_fence, 0)?));
+        return Ok(grant(bump(next_fence, floor)?));
     };
     match &r.holder {
         Some(h) if h.node == profile.node => {
-            if h.class == profile.class {
+            if h.class == profile.class && r.fence >= floor {
                 return Ok(Step::Reply(Reply::Lease(r.lease(group, key))));
             }
             let mut next = r.clone();
+            if r.fence < floor {
+                next.fence = bump(next_fence, floor)?;
+            }
             next.holder = Some(Holder {
                 node: profile.node.clone(),
                 class: profile.class,
@@ -215,7 +236,7 @@ pub fn acquire(
         None if view.waiter_blocks(r.reserved.as_ref(), &profile.node) => {
             Ok(Step::Reply(Reply::Lease(None)))
         }
-        _ => Ok(grant(bump(next_fence, r.fence)?)),
+        _ => Ok(grant(bump(next_fence, r.fence.max(floor))?)),
     }
 }
 

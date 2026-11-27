@@ -576,13 +576,16 @@ name = "baton-identity"
 version = "0.0.0"
 dependencies = [
  "baton-core",
+ "curve25519-dalek 5.0.0",
  "data-encoding",
  "ed25519-dalek 2.2.0",
  "hmac",
  "postcard",
+ "proptest",
  "rand_core 0.6.4",
  "serde",
  "sha2 0.11.1",
+ "subtle",
  "thiserror 2.0.21",
  "zeroize",
 ]
@@ -4430,6 +4433,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d55d956fa96f5ec02be2e13af0e20391a5aa83d6a074e3ad368959d0fab299ea"
 
 [[package]]
+name = "qrcodegen"
+version = "1.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4339fc7a1021c9c1621d87f5e3505f2805c8c105420ba2f2a4df86814590c142"
+
+[[package]]
 name = "quick-error"
 version = "1.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4783,6 +4792,52 @@ dependencies = [
 ]
 
 [[package]]
+name = "rowboat"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "baton-identity",
+ "baton-lease",
+ "baton-link",
+ "baton-link-iroh",
+ "baton-signal",
+ "baton-signal-local",
+ "clap",
+ "data-encoding",
+ "futures",
+ "getrandom 0.4.3",
+ "object_store",
+ "qrcodegen",
+ "rinse-mail",
+ "rinse-mail-direct",
+ "rowboat-api",
+ "rowboat-endpoint",
+ "rowboat-endpoint-iroh",
+ "rowboat-endpoint-memory",
+ "rowboat-keystore",
+ "rowboat-keystore-file",
+ "rowboat-keystore-memory",
+ "rowboat-node",
+ "serde",
+ "serde_json",
+ "skein-core",
+ "skein-mail",
+ "skein-push",
+ "skein-server",
+ "skein-storage",
+ "skein-storage-fs",
+ "skein-storage-s3",
+ "skein-telemetry",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "toml 1.2.2+spec-1.1.0",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "rowboat-api"
 version = "0.0.0"
 dependencies = [
@@ -4888,6 +4943,72 @@ dependencies = [
 ]
 
 [[package]]
+name = "rowboat-endpoint"
+version = "0.0.0"
+dependencies = [
+ "async-trait",
+ "baton-identity",
+ "baton-link",
+ "futures",
+ "thiserror 2.0.21",
+ "tokio",
+]
+
+[[package]]
+name = "rowboat-endpoint-iroh"
+version = "0.0.0"
+dependencies = [
+ "async-trait",
+ "baton-identity",
+ "baton-link",
+ "baton-link-iroh",
+ "rowboat-endpoint",
+ "tokio",
+]
+
+[[package]]
+name = "rowboat-endpoint-memory"
+version = "0.0.0"
+dependencies = [
+ "async-trait",
+ "baton-identity",
+ "baton-link",
+ "baton-link-memory",
+ "rowboat-endpoint",
+ "tokio",
+]
+
+[[package]]
+name = "rowboat-group"
+version = "0.0.0"
+dependencies = [
+ "async-trait",
+ "baton-core",
+ "baton-group",
+ "baton-identity",
+ "baton-keys",
+ "baton-lease",
+ "baton-link",
+ "baton-seal",
+ "baton-state",
+ "baton-state-memory",
+ "blake3",
+ "bytes",
+ "data-encoding",
+ "futures",
+ "getrandom 0.4.3",
+ "postcard",
+ "proptest",
+ "rowboat-endpoint",
+ "rowboat-endpoint-iroh",
+ "rowboat-endpoint-memory",
+ "serde",
+ "thiserror 2.0.21",
+ "tokio",
+ "zeroize",
+]
+
+[[package]]
 name = "rowboat-integration"
 version = "0.0.0"
 dependencies = [
@@ -4902,6 +5023,7 @@ dependencies = [
  "rowboat-api",
  "rowboat-discover",
  "rowboat-discover-autoconfig",
+ "rowboat-endpoint-iroh",
  "rowboat-keystore-memory",
  "rowboat-node",
  "rustls",
@@ -4925,6 +5047,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "rowboat-keystore-file"
+version = "0.0.0"
+dependencies = [
+ "async-trait",
+ "getrandom 0.4.3",
+ "rowboat-keystore",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "rowboat-keystore-memory"
 version = "0.0.0"
 dependencies = [
@@ -4937,9 +5070,12 @@ dependencies = [
 name = "rowboat-load"
 version = "0.0.0"
 dependencies = [
+ "baton-lease",
  "clap",
  "futures",
  "rowboat-api",
+ "rowboat-endpoint",
+ "rowboat-endpoint-memory",
  "rowboat-node",
  "thiserror 2.0.21",
  "tokio",
@@ -4951,12 +5087,18 @@ version = "0.0.0"
 dependencies = [
  "async-trait",
  "baton-core",
+ "baton-group",
  "baton-identity",
+ "baton-keys",
  "baton-lease",
  "baton-lease-cas",
+ "baton-lease-server",
+ "baton-link",
+ "baton-link-iroh",
  "baton-signal",
  "baton-signal-local",
  "baton-state",
+ "baton-state-memory",
  "bento",
  "bento-category",
  "bento-insight-view",
@@ -4979,10 +5121,15 @@ dependencies = [
  "rowboat-discover-net",
  "rowboat-discover-srv",
  "rowboat-discover-table",
+ "rowboat-endpoint",
+ "rowboat-endpoint-iroh",
+ "rowboat-endpoint-memory",
+ "rowboat-group",
  "rowboat-keystore",
  "rowboat-keystore-memory",
  "rowboat-spam",
  "rowboat-spam-signals",
+ "rowboat-sync",
  "serde",
  "serde_json",
  "skein-accounts",
@@ -4994,11 +5141,13 @@ dependencies = [
  "skein-mail",
  "skein-mail-imap",
  "skein-oauth",
+ "skein-push",
  "skein-send",
  "skein-send-smtp",
  "skein-storage",
  "skein-storage-fs",
  "skein-storage-sealed",
+ "skein-storage-tiered",
  "skein-view",
  "tempfile",
  "thiserror 2.0.21",
@@ -5024,6 +5173,47 @@ dependencies = [
  "rinse-mail-direct",
  "rowboat-spam",
  "tokio",
+]
+
+[[package]]
+name = "rowboat-sync"
+version = "0.0.0"
+dependencies = [
+ "async-trait",
+ "baton-command",
+ "baton-core",
+ "baton-fetch",
+ "baton-group",
+ "baton-identity",
+ "baton-keys",
+ "baton-lease",
+ "baton-link",
+ "baton-link-memory",
+ "baton-seal",
+ "baton-signal",
+ "baton-signal-local",
+ "baton-state-memory",
+ "blake3",
+ "bytes",
+ "futures",
+ "postcard",
+ "proptest",
+ "rowboat-api",
+ "rowboat-group",
+ "serde",
+ "serde_json",
+ "skein-core",
+ "skein-engine",
+ "skein-keyring",
+ "skein-keyring-local",
+ "skein-storage",
+ "skein-storage-memory",
+ "skein-storage-tiered",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
+ "ulid",
+ "zeroize",
 ]
 
 [[package]]

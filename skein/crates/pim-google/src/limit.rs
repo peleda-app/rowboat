@@ -55,8 +55,6 @@ mod tests {
         for _ in 0..30 {
             limiter.take().await;
         }
-        let spent = start.elapsed();
-        assert!(spent >= Duration::from_millis(1990), "{spent:?}");
-        assert!(spent <= Duration::from_millis(2100), "{spent:?}");
+        assert_eq!(start.elapsed(), Duration::from_secs(2));
     }
 }

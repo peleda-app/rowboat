@@ -29,8 +29,10 @@ pub enum CommandClass {
     Flags,
     /// `move_to`, `archive`.
     Move,
-    /// `delete`.
+    /// `delete` to the trash.
     Delete,
+    /// `delete` for good.
+    DeleteForever,
     /// The draft calls.
     Draft,
     /// `send`.
@@ -51,6 +53,7 @@ impl CommandClass {
             Self::Flags => "mail-flags",
             Self::Move => "mail-move",
             Self::Delete => "mail-delete",
+            Self::DeleteForever => "mail-delete-forever",
             Self::Draft => "mail-draft",
             Self::Send => "mail-send",
             Self::SendCancel => "mail-send-cancel",
@@ -152,7 +155,12 @@ impl Request {
             Self::SyncNow { .. } => CommandClass::Sync,
             Self::SetRead { .. } | Self::SetFlagged { .. } => CommandClass::Flags,
             Self::MoveTo { .. } | Self::Archive { .. } => CommandClass::Move,
-            Self::Delete { .. } => CommandClass::Delete,
+            Self::Delete {
+                permanent: false, ..
+            } => CommandClass::Delete,
+            Self::Delete {
+                permanent: true, ..
+            } => CommandClass::DeleteForever,
             Self::SaveDraft { .. } | Self::DeleteDraft { .. } => CommandClass::Draft,
             Self::Send { .. } => CommandClass::Send,
             Self::CancelSend { .. } => CommandClass::SendCancel,

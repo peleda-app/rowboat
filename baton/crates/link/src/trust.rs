@@ -9,8 +9,22 @@ use baton_identity::{PublicKey, RosterHandle};
 /// the call (no caching that delays a revocation), and the call is cheap and never blocks on I/O,
 /// because links ask it on every new connection and stream.
 pub trait Trust: Send + Sync {
-    /// Whether `peer` is allowed to exchange streams with this node right now.
+    /// Whether `peer` is allowed to exchange streams with this node right now, on every protocol.
     fn allows(&self, peer: &PublicKey) -> bool;
+
+    /// Whether `peer` may exchange streams on `protocol`: everything [`Trust::allows`] admits,
+    /// and an implementation may admit a peer on some protocols only (for example a revoked node
+    /// on the one protocol that tells it so). Links ask it for every stream, both ways.
+    fn allows_on(&self, peer: &PublicKey, protocol: &crate::Protocol) -> bool {
+        let _ = protocol;
+        self.allows(peer)
+    }
+
+    /// Whether `peer` may connect at all: [`Trust::allows`] or admitted on some protocol. Links
+    /// ask it before a connection, then [`Trust::allows_on`] for each stream on it.
+    fn reachable(&self, peer: &PublicKey) -> bool {
+        self.allows(peer)
+    }
 }
 
 /// A roster-backed trust: exactly the members of the roster the handle holds at the moment of the

@@ -62,6 +62,23 @@ pub enum NodeError {
     /// The node is busy with this account (removal in progress, too many calls).
     #[error("busy")]
     Busy,
+    /// A pairing code the other node did not accept: wrong, used up, withdrawn, unknown to it or
+    /// expired there. The joining side cannot tell these apart, by design.
+    #[error("pairing code rejected")]
+    PairingCodeRejected,
+    /// The invite expired before it was used.
+    #[error("pairing expired")]
+    PairingExpired,
+    /// The other side refused the pairing after the code was accepted: the person there said the
+    /// fingerprints differ or did not answer in time, or that node would not take this one.
+    #[error("pairing refused")]
+    PairingRefused,
+    /// This node may not do this: it holds no member key, or the group log does not allow it.
+    #[error("forbidden")]
+    Forbidden,
+    /// The other node (a device or a server) could not be reached.
+    #[error("peer unreachable")]
+    PeerUnreachable,
     /// Anything else.
     #[error("internal error")]
     Internal,

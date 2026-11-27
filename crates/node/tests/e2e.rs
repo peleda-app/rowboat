@@ -181,7 +181,7 @@ async fn mark_read_shows_at_once_and_settles() {
             .unread
     );
     let command = queued.commands[0].clone();
-    let settled = tokio::time::timeout(std::time::Duration::from_secs(20), async {
+    let settled = within("the command to settle", async {
         while let Some(e) = events.next().await {
             if let NodeEvent::CommandSettled {
                 command: c,
@@ -195,8 +195,7 @@ async fn mark_read_shows_at_once_and_settles() {
         }
         panic!("events ended");
     })
-    .await
-    .unwrap();
+    .await;
     assert_eq!(settled, CommandOutcome::Applied);
     let raw = api.message_raw(&account, &first.id).await.unwrap();
     let flags = t.fakes.server("ada").flags_of("INBOX", &raw).await.unwrap();
@@ -298,7 +297,7 @@ async fn message_bytes(server: &skein_mail::testing::FakeMail, mailbox: &str) ->
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn send_with_an_undo_window() {
-    let t = test_node(1_500).await.unwrap();
+    let t = test_node(3_600_000).await.unwrap();
     let api = t.node.api();
     let account = add(&t, "ada").await;
     until("the mailboxes to be known", || async {
@@ -328,7 +327,7 @@ async fn send_with_an_undo_window() {
     };
     let id = api.save_draft(draft.clone()).await.unwrap();
     assert_eq!(api.list_drafts().await.unwrap().len(), 1);
-    let mut saved = api.get_draft(&id).await.unwrap();
+    let saved = api.get_draft(&id).await.unwrap();
 
     let queued = api.send(saved.clone()).await.unwrap();
     assert_eq!(queued.draft, id);
@@ -355,6 +354,41 @@ async fn send_with_an_undo_window() {
         "cancelling again succeeds"
     );
 
+    t.node.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_send_leaves_without_its_bcc_and_files_a_sent_copy() {
+    let t = test_node(0).await.unwrap();
+    let api = t.node.api();
+    let account = add(&t, "ada").await;
+    until("the mailboxes to be known", || async {
+        api.list_mailboxes(&account)
+            .await
+            .unwrap()
+            .iter()
+            .any(|m| m.role == Some(MailboxRole::Sent))
+    })
+    .await;
+    let draft = Draft {
+        id: None,
+        account: account.clone(),
+        to: vec![Recipient {
+            name: Some("Sam".into()),
+            address: EmailAddress::new("sam@example.org").unwrap(),
+        }],
+        cc: vec![],
+        bcc: vec![Recipient {
+            name: None,
+            address: EmailAddress::new("hidden@example.net").unwrap(),
+        }],
+        subject: "Plans".into(),
+        text: "See you at the garden.".into(),
+        reply: None,
+        attachments: vec![],
+    };
+    let id = api.save_draft(draft).await.unwrap();
+    let mut saved = api.get_draft(&id).await.unwrap();
     saved.subject = "Plans, again".into();
     let queued = api.send(saved).await.unwrap();
     until("the message to leave", || async {
@@ -421,6 +455,69 @@ async fn removing_an_account_sweeps_its_mail() {
     let again = add(&t, "ada").await;
     assert_ne!(again, ada);
     t.node.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_removal_waits_for_the_engine_to_let_go_of_the_account() {
+    let t = test_node(0).await.unwrap();
+    let api = t.node.api();
+    seed(&t, "ada", "INBOX", 2).await;
+    let ada = add(&t, "ada").await;
+    wait_messages(&*api, &ada, 2).await;
+    let server = t.fakes.server("ada");
+    let hold = server.hold();
+    server
+        .add("INBOX", &message(7, "Held"), skein_core::Flags::default())
+        .await;
+    until("the engine to be stuck in a session", || async {
+        server.waiting() == 1
+    })
+    .await;
+    api.remove_account(&ada).await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    drop(hold);
+    until("the account's records to go", || async {
+        let tenants = t.dir.path().join("node/objects/tenants");
+        count_files(&tenants, ada.as_str()) == keyring_tombstones(&tenants, ada.as_str())
+    })
+    .await;
+    t.node.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_node_stuck_in_a_session_still_frees_its_directory_on_shutdown() {
+    let t = rowboat_node::testing::test_node_timed(rowboat_node::TestTiming {
+        shutdown: std::time::Duration::from_millis(100),
+        ..rowboat_node::testing::fast(0)
+    })
+    .await
+    .unwrap();
+    let api = t.node.api();
+    seed(&t, "ada", "INBOX", 2).await;
+    let ada = add(&t, "ada").await;
+    wait_messages(&*api, &ada, 2).await;
+    let server = t.fakes.server("ada");
+    let hold = server.hold();
+    server
+        .add("INBOX", &message(7, "Held"), skein_core::Flags::default())
+        .await;
+    until("the engine to be stuck in a session", || async {
+        server.waiting() == 1
+    })
+    .await;
+    t.node.shutdown().await;
+    drop(api);
+    let rowboat_node::testing::TestNode {
+        node,
+        fakes,
+        keystore,
+        dir,
+    } = t;
+    drop(node);
+    let again = reopen(&dir, &fakes, &keystore, 0).await;
+    drop(hold);
+    let again = again.unwrap();
+    again.shutdown().await;
 }
 
 fn keyring_tombstones(tenants: &std::path::Path, account: &str) -> usize {
@@ -693,18 +790,23 @@ async fn a_calendar_part_is_never_parsed_in_the_node_process() {
     t.node.shutdown().await;
 }
 
-async fn next_new_mail(events: &mut EventStream, secs: u64) -> Option<(AccountId, Vec<NewMail>)> {
-    tokio::time::timeout(std::time::Duration::from_secs(secs), async {
-        while let Some(e) = events.next().await {
-            if let NodeEvent::NewMail { account, items } = e {
-                return Some((account, items));
-            }
+async fn next_new_mail(events: &mut EventStream) -> Option<(AccountId, Vec<NewMail>)> {
+    while let Some(e) = events.next().await {
+        if let NodeEvent::NewMail { account, items } = e {
+            return Some((account, items));
         }
-        None
-    })
-    .await
-    .ok()
-    .flatten()
+    }
+    None
+}
+
+/// A quick look for a stray notification. It can only miss one, never fail a correct node; the
+/// positive waits after it check that the next notification is exactly the expected one.
+async fn no_new_mail_for(events: &mut EventStream, secs: u64) -> bool {
+    tokio::time::timeout(std::time::Duration::from_secs(secs), next_new_mail(events))
+        .await
+        .ok()
+        .flatten()
+        .is_none()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -725,10 +827,7 @@ async fn new_mail_after_the_first_sync_notifies_and_backfill_does_not() {
     })
     .await;
     wait_messages(&*api, &account, 3).await;
-    assert!(
-        next_new_mail(&mut events, 1).await.is_none(),
-        "backfill notified"
-    );
+    assert!(no_new_mail_for(&mut events, 1).await, "backfill notified");
 
     let server = t.fakes.server("ada");
     server
@@ -739,7 +838,7 @@ async fn new_mail_after_the_first_sync_notifies_and_backfill_does_not() {
         )
         .await;
     api.sync_now(Some(&account)).await.unwrap();
-    let (who, items) = next_new_mail(&mut events, 20)
+    let (who, items) = within("a notification", next_new_mail(&mut events))
         .await
         .expect("no notification");
     assert_eq!(who, account);
@@ -768,7 +867,7 @@ async fn new_mail_after_the_first_sync_notifies_and_backfill_does_not() {
     api.sync_now(Some(&account)).await.unwrap();
     wait_messages(&*api, &account, 5).await;
     assert!(
-        next_new_mail(&mut events, 1).await.is_none(),
+        no_new_mail_for(&mut events, 1).await,
         "a muted account notified"
     );
     t.node.shutdown().await;
@@ -877,7 +976,7 @@ async fn spam_stays_silent_end_to_end() {
     })
     .await;
     wait_messages(&*api, &account, 1).await;
-    assert!(next_new_mail(&mut events, 1).await.is_none());
+    assert!(no_new_mail_for(&mut events, 1).await);
 
     server
         .add(
@@ -891,10 +990,7 @@ async fn spam_stays_silent_end_to_end() {
         .await;
     api.sync_now(Some(&account)).await.unwrap();
     wait_messages(&*api, &account, 3).await;
-    assert!(
-        next_new_mail(&mut events, 2).await.is_none(),
-        "spam notified"
-    );
+    assert!(no_new_mail_for(&mut events, 2).await, "spam notified");
 
     server
         .add(
@@ -904,7 +1000,7 @@ async fn spam_stays_silent_end_to_end() {
         )
         .await;
     api.sync_now(Some(&account)).await.unwrap();
-    let (_, items) = next_new_mail(&mut events, 20)
+    let (_, items) = within("a notification", next_new_mail(&mut events))
         .await
         .expect("a clean message did not notify");
     assert_eq!(items.len(), 1);
@@ -1002,4 +1098,27 @@ async fn key_names_are_every_key_and_deleting_them_shreds_the_data() {
     }
     let reopened = reopen(&dir, &fakes, &keystore, 0).await;
     assert!(matches!(reopened, Err(BuildError::KeysLost)));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_permanent_delete_needs_the_delete_forever_class() {
+    let t = test_node(0).await.unwrap();
+    let api = t.node.api();
+    seed(&t, "ada", "INBOX", 2).await;
+    let account = add(&t, "ada").await;
+    wait_messages(&*api, &account, 2).await;
+    let items = api.list_messages(all(&account)).await.unwrap().items;
+    t.node
+        .set_member_classes_for_tests(&account, &["mail-delete", "mail-flags"])
+        .await;
+    assert_eq!(
+        api.delete(target(&account, &items[0].id), true)
+            .await
+            .unwrap_err(),
+        NodeError::NotFound
+    );
+    api.delete(target(&account, &items[0].id), false)
+        .await
+        .unwrap();
+    t.node.shutdown().await;
 }

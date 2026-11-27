@@ -195,14 +195,18 @@ pub(crate) async fn delete_prefix(
 
 /// The control paths under which Skein keeps records of one account, each followed by
 /// `/{account}`: whole subtrees for the first list, single records for the second.
-const ACCOUNT_CONTROL_TREES: [&str; 5] = [
+/// The control trees Skein keeps per account, each at `{tree}/{account}/...`; `credentials`
+/// holds sealed secrets. [`purge_account`] removes them; a node handing an account over moves
+/// them.
+pub const ACCOUNT_CONTROL_TREES: [&str; 5] = [
     "cursors",
     "started",
     "sending",
     "credentials",
     "pim-cursors",
 ];
-const ACCOUNT_CONTROL_RECORDS: [&str; 6] =
+/// The control records Skein keeps per account, each at `{record}/{account}`.
+pub const ACCOUNT_CONTROL_RECORDS: [&str; 6] =
     ["accounts", "status", "state", "pim-state", "push", "oauth"];
 
 /// Deletes everything one account has in the journal (head, segments, snapshots), the command

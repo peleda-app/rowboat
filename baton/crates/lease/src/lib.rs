@@ -159,6 +159,23 @@ pub trait Leases: Send + Sync {
         profile: &NodeProfile,
     ) -> Result<Option<Lease>, LeaseError>;
 
+    /// `acquire`, never below `floor` (the highest token the caller's own storage has seen for
+    /// the key, perhaps from another arbiter): a new grant gets a token above `floor`, a renewal
+    /// whose token is below it is granted again with one above it, and a renewal at or above it
+    /// keeps its token. An implementation may ignore a floor it judges implausible (far above any
+    /// token it could grant); the caller then gets a lease its storage refuses and gives it back.
+    /// The default ignores the floor: callers check `lease.fence >= floor` themselves.
+    async fn acquire_above(
+        &self,
+        group: &GroupId,
+        key: &LeaseKey,
+        profile: &NodeProfile,
+        floor: FencingToken,
+    ) -> Result<Option<Lease>, LeaseError> {
+        let _ = floor;
+        self.acquire(group, key, profile).await
+    }
+
     /// Asks a weaker live holder to hand the lease over to the caller.
     async fn request_takeover(
         &self,

@@ -5,8 +5,11 @@
 use rowboat_api::{AccountId, Draft, EmailAddress, MailboxId, check};
 use serde::{Deserialize, Serialize};
 
-/// The format version of every record below.
+/// The format version of every record below but the node record.
 pub const FORMAT: u16 = 1;
+/// The node record's format: 1 is phase 1 (a roster of one), 2 keeps the group in the Baton group
+/// log. A format 1 record is upgraded on the first start of a phase 2 build.
+pub const NODE_FORMAT: u16 = 2;
 /// Most bytes of a node record or account record.
 pub const MAX_SMALL_RECORD: usize = 64 * 1024;
 /// Most bytes of a draft record: the attachment cap, base64-sized in JSON, plus text.
@@ -20,7 +23,7 @@ pub struct BadRecord;
 /// `system/node`: written last on the first run.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NodeRecord {
-    /// [`FORMAT`].
+    /// 1 or [`NODE_FORMAT`].
     pub v: u16,
     /// The node id.
     pub node: String,
@@ -44,14 +47,18 @@ pub fn encode_node_record(record: &NodeRecord) -> Vec<u8> {
     serde_json::to_vec(record).unwrap_or_default()
 }
 
-/// Decodes a node record: at most [`MAX_SMALL_RECORD`] bytes, version [`FORMAT`], ids of
+/// Decodes a node record: at most [`MAX_SMALL_RECORD`] bytes, version 1 or [`NODE_FORMAT`], ids of
 /// `[a-z0-9_-]{1,64}`.
 pub fn decode_node_record(bytes: &[u8]) -> Result<NodeRecord, BadRecord> {
     if bytes.len() > MAX_SMALL_RECORD {
         return Err(BadRecord);
     }
     let r: NodeRecord = serde_json::from_slice(bytes).map_err(|_| BadRecord)?;
-    if r.v != FORMAT || !small_id(&r.node) || !small_id(&r.group) || !small_id(&r.profile) {
+    if !(1..=NODE_FORMAT).contains(&r.v)
+        || !small_id(&r.node)
+        || !small_id(&r.group)
+        || !small_id(&r.profile)
+    {
         return Err(BadRecord);
     }
     Ok(r)
@@ -80,6 +87,10 @@ pub struct AccountMeta {
     pub notify: bool,
     /// When it was added.
     pub created_at: i64,
+    /// For an account another node leads and this node follows: that node's id. `None` for an
+    /// account this node leads.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner: Option<String>,
 }
 
 fn notify_default() -> bool {
@@ -102,6 +113,9 @@ pub fn decode_account_meta(bytes: &[u8]) -> Result<AccountMeta, BadRecord> {
         || m.display_name
             .as_deref()
             .is_some_and(|n| !check::one_line(n, rowboat_api::MAX_NAME_CHARS))
+        || m.owner
+            .as_deref()
+            .is_some_and(|o| rowboat_api::group::node_id(o).is_err())
     {
         return Err(BadRecord);
     }
@@ -177,9 +191,17 @@ mod tests {
             created_at: 1,
         };
         assert_eq!(decode_node_record(&encode_node_record(&n)).unwrap(), n);
-        let mut old = n.clone();
-        old.v = 2;
-        assert!(decode_node_record(&encode_node_record(&old)).is_err());
+        let mut current = n.clone();
+        current.v = NODE_FORMAT;
+        assert_eq!(
+            decode_node_record(&encode_node_record(&current)).unwrap(),
+            current
+        );
+        for v in [0, NODE_FORMAT + 1] {
+            let mut other = n.clone();
+            other.v = v;
+            assert!(decode_node_record(&encode_node_record(&other)).is_err());
+        }
         let mut bad = n;
         bad.group = "../x".into();
         assert!(decode_node_record(&encode_node_record(&bad)).is_err());
@@ -210,8 +232,22 @@ mod tests {
             removing: false,
             notify: false,
             created_at: 3,
+            owner: None,
         };
         assert_eq!(decode_account_meta(&encode_account_meta(&m)).unwrap(), m);
+        let followed = AccountMeta {
+            owner: Some("a".repeat(52)),
+            ..m.clone()
+        };
+        assert_eq!(
+            decode_account_meta(&encode_account_meta(&followed)).unwrap(),
+            followed
+        );
+        let bad_owner = AccountMeta {
+            owner: Some("../x".into()),
+            ..m.clone()
+        };
+        assert!(decode_account_meta(&encode_account_meta(&bad_owner)).is_err());
         let older = format!(
             r#"{{"v":1,"account":"{}","address":"pat@example.com","created_at":1}}"#,
             draft().account

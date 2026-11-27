@@ -23,6 +23,7 @@ baton-lease-cas = { path = "../crates/lease-cas" }
 baton-mesh = { path = "../crates/mesh" }
 baton-group = { path = "../crates/group" }
 baton-command = { path = "../crates/command" }
+baton-fetch = { path = "../crates/fetch" }
 baton-keys = { path = "../crates/keys" }
 baton-drop = { path = "../crates/drop" }
 baton-mailbox = { path = "../crates/mailbox" }
@@ -132,6 +133,13 @@ bench = false
 [[bin]]
 name = "keys_box"
 path = "fuzz_targets/keys_box.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fetch_request"
+path = "fuzz_targets/fetch_request.rs"
 test = false
 doc = false
 bench = false

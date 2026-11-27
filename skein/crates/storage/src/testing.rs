@@ -12,6 +12,7 @@
 //! Every suite uses its own tenant ids, so suites can share one store.
 
 mod integrity;
+mod replica;
 mod slow;
 mod tier;
 
@@ -23,6 +24,7 @@ use skein_core::{
     ItemRef, SCHEMA_VERSION, Seq, TenantId, Timestamp,
 };
 
+pub use replica::{replica, replica_attested};
 pub use slow::SlowObjects;
 pub use tier::read_tier;
 
@@ -667,6 +669,29 @@ pub async fn log(log: Arc<dyn Log>) {
     );
     chain_guarantees(&log, &t, &a).await;
 
+    let d = account("d");
+    log.append(&t, &d, FencingToken(9), vec![sample_event(&d, 1)])
+        .await
+        .unwrap();
+    let before = log.signed_head(&t, &a).await.unwrap();
+    assert!(log.purge_account(&t, &d).await.unwrap() > 0);
+    assert_eq!(
+        log.head(&t, &d).await.unwrap(),
+        Seq(0),
+        "a purged account reads empty"
+    );
+    log.append(&t, &d, FencingToken(1), vec![sample_event(&d, 1)])
+        .await
+        .expect("a purged account is written from the start again");
+    assert_eq!(log.head(&t, &d).await.unwrap(), Seq(1));
+    assert_eq!(
+        log.signed_head(&t, &a).await.unwrap(),
+        before,
+        "other accounts are untouched"
+    );
+    log.purge_account(&t, &d).await.unwrap();
+    assert!(log.heads(&t).await.unwrap().iter().all(|(x, _)| x != &d));
+
     let b = account("b");
     let mut n = 0;
     for chunk in [1u64, 7, 250, 1, 900] {
@@ -1179,7 +1204,9 @@ pub async fn all_over_objects(objects: Arc<dyn Objects>) {
     object_log_orphans(objects.clone()).await;
     head_attestor(Arc::new(NoAttestor)).await;
     head_attestor(Arc::new(KeyedAttestor([7; 32]))).await;
-    integrity::object_log_integrity(objects).await;
+    integrity::object_log_integrity(objects.clone()).await;
+    replica(storage.log.clone()).await;
+    replica_attested(objects).await;
 }
 
 /// [`crate::purge_account`] removes one account's journal, commands and control records and

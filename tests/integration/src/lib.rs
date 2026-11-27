@@ -40,6 +40,9 @@ pub enum Kind {
     Stalwart,
     /// GreenMail: IMAP and SMTP with local delivery.
     GreenMail,
+    /// GreenMail on the same ports in the compose network and on the host, for the server
+    /// container (`greenmail-shared`).
+    GreenMailShared,
 }
 
 /// How the node reaches a server and how the suite inspects it.
@@ -92,6 +95,14 @@ impl Server {
                 smtps_port: 49165,
                 delivers_locally: true,
             },
+            Kind::GreenMailShared => Self {
+                kind,
+                imap: endpoint(49493, Security::Tls),
+                smtp: endpoint(49465, Security::Tls),
+                imaps_port: 49493,
+                smtps_port: 49465,
+                delivers_locally: true,
+            },
         }
     }
 
@@ -108,9 +119,14 @@ impl Server {
         };
         match self.kind {
             Kind::Dovecot => {}
-            Kind::GreenMail => {
+            Kind::GreenMail | Kind::GreenMailShared => {
+                let api = if self.kind == Kind::GreenMail {
+                    49180
+                } else {
+                    49481
+                };
                 let answer = reqwest::Client::new()
-                    .post("http://127.0.0.1:49180/api/user")
+                    .post(format!("http://127.0.0.1:{api}/api/user"))
                     .json(&serde_json::json!({
                         "email": user.address,
                         "login": user.address,
@@ -389,7 +405,9 @@ pub fn timing() -> TestTiming {
         interval: Duration::from_secs(1),
         poll: Duration::from_millis(100),
         undo_ms: 300,
-        removal_grace: Duration::from_secs(3),
+        shutdown: Duration::from_secs(30),
+        rounds: 1,
+        fallback: None,
     }
 }
 

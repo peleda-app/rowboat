@@ -67,6 +67,39 @@ pub trait Log: SegmentSource {
         account: &AccountId,
     ) -> Result<SignedHead, StorageError>;
 
+    /// Stores the bytes of a segment another copy of this journal committed, ahead of the local
+    /// head, for [`Log::install`] to commit later. The bytes must match `segment`
+    /// ([`crate::verify_segment`]: hash, header, link and events of this tenant and account);
+    /// a segment starting at or below the local head is refused with [`StorageError::Conflict`]
+    /// unless exactly these bytes are already there, and one written under a token below the
+    /// local head's with [`StorageError::Fenced`]. A staged segment is invisible to every read
+    /// until a head covers it. Staging again is harmless.
+    async fn stage(
+        &self,
+        tenant: &TenantId,
+        account: &AccountId,
+        segment: &SegmentRef,
+        bytes: Bytes,
+    ) -> Result<(), StorageError>;
+
+    /// Moves the head to `signed`, a head another copy of this journal committed, storing its
+    /// attestation verbatim, so this log holds the other copy's journal byte for byte and could
+    /// continue its chain. Refused unless every check passes, and then nothing changes: the head
+    /// is this tenant's and account's and well formed; the configured attestor accepts it; its
+    /// token is not below the local head's ([`StorageError::Fenced`]) and it does not go back or
+    /// fork ([`IntegrityError::Rollback`], [`IntegrityError::Fork`]); and the chain from its tip
+    /// back to the local tip (or to the first event of an empty journal) is complete in this
+    /// log, staged or committed ([`IntegrityError::Missing`], [`IntegrityError::Link`]). Staged
+    /// segments in the range that are not on that chain are removed. The writer of an account
+    /// never installs: installing while holding the account's lease is the caller's error to
+    /// avoid.
+    async fn install(
+        &self,
+        tenant: &TenantId,
+        account: &AccountId,
+        signed: &SignedHead,
+    ) -> Result<(), StorageError>;
+
     /// Up to `limit` committed events starting at `from`.
     async fn read(
         &self,
@@ -110,6 +143,16 @@ pub trait Log: SegmentSource {
     /// Deletes the logs, heads and snapshots of every account of the tenant; returns how many
     /// objects were removed. Afterwards every account reads as empty.
     async fn purge(&self, tenant: &TenantId) -> Result<u64, StorageError>;
+
+    /// Deletes the log, head and snapshots of one account and forgets every head of it this log
+    /// has seen, so the account reads as empty afterwards and may be written or installed from
+    /// the start again (a replica dropped to follow another copy). Returns how many objects were
+    /// removed; other accounts are untouched.
+    async fn purge_account(
+        &self,
+        tenant: &TenantId,
+        account: &AccountId,
+    ) -> Result<u64, StorageError>;
 }
 
 pub(crate) const SEGMENT_FORMAT: u32 = 1;
@@ -194,6 +237,8 @@ struct Seen {
 struct Watermarks {
     clock: AtomicU64,
     seen: Mutex<HashMap<(TenantId, AccountId), Seen>>,
+    forgotten: Mutex<HashMap<(TenantId, AccountId), u64>>,
+    purging: Mutex<HashMap<(TenantId, AccountId), usize>>,
 }
 
 impl Watermarks {
@@ -214,6 +259,9 @@ impl Watermarks {
         head: &Head,
         started: u64,
     ) -> Result<(), IntegrityError> {
+        if self.purging(tenant, account) {
+            return Ok(());
+        }
         let seen = self.seen.lock().expect("not poisoned");
         match seen.get(&(tenant.clone(), account.clone())) {
             Some(s) if s.stamp < started => s
@@ -248,6 +296,62 @@ impl Watermarks {
             .lock()
             .expect("not poisoned")
             .retain(|(t, _), _| t != tenant);
+    }
+
+    fn forget_account(&self, tenant: &TenantId, account: &AccountId) {
+        let key = (tenant.clone(), account.clone());
+        let stamp = self.tick();
+        let mut seen = self.seen.lock().expect("not poisoned");
+        seen.remove(&key);
+        let mut forgotten = self.forgotten.lock().expect("not poisoned");
+        if forgotten.len() >= 4096 {
+            forgotten.clear();
+        }
+        forgotten.insert(key, stamp);
+    }
+
+    fn purging(&self, tenant: &TenantId, account: &AccountId) -> bool {
+        self.purging
+            .lock()
+            .expect("not poisoned")
+            .contains_key(&(tenant.clone(), account.clone()))
+    }
+
+    fn begin_purge(&self, tenant: &TenantId, account: &AccountId) {
+        *self
+            .purging
+            .lock()
+            .expect("not poisoned")
+            .entry((tenant.clone(), account.clone()))
+            .or_insert(0) += 1;
+        self.forget_account(tenant, account);
+    }
+
+    fn end_purge(&self, tenant: &TenantId, account: &AccountId) {
+        self.forget_account(tenant, account);
+        let mut purging = self.purging.lock().expect("not poisoned");
+        let key = (tenant.clone(), account.clone());
+        if let Some(n) = purging.get_mut(&key) {
+            *n -= 1;
+            if *n == 0 {
+                purging.remove(&key);
+            }
+        }
+    }
+
+    fn observe_read(&self, tenant: &TenantId, account: &AccountId, head: &Head, started: u64) {
+        if self.purging(tenant, account) {
+            return;
+        }
+        let stale = self
+            .forgotten
+            .lock()
+            .expect("not poisoned")
+            .get(&(tenant.clone(), account.clone()))
+            .is_some_and(|f| *f > started);
+        if !stale {
+            self.observe(tenant, account, head);
+        }
     }
 }
 
@@ -358,7 +462,7 @@ impl ObjectLog {
                 .verify(&journal, head.attestation.as_deref())
                 .await?;
         }
-        self.marks.observe(tenant, account, &head);
+        self.marks.observe_read(tenant, account, &head, started);
         Ok((head, expect))
     }
 
@@ -688,6 +792,119 @@ impl Log for ObjectLog {
         Ok(Seq(self.load_head(tenant, account).await?.0.seq))
     }
 
+    async fn stage(
+        &self,
+        tenant: &TenantId,
+        account: &AccountId,
+        segment: &SegmentRef,
+        bytes: Bytes,
+    ) -> Result<(), StorageError> {
+        crate::verify_segment(tenant, account, segment, &bytes)?;
+        let (head, _) = self.load_head(tenant, account).await?;
+        let key = Self::seg_key(
+            tenant,
+            account,
+            segment.start.0,
+            segment.end.0,
+            segment.fence.0,
+        );
+        if segment.start.0 <= head.seq {
+            return match self.objects.get(&key).await? {
+                Some((held, _)) if SegmentHash::of(&held) == segment.hash => Ok(()),
+                _ => Err(StorageError::Conflict),
+            };
+        }
+        if segment.fence.0 < head.fence {
+            return Err(StorageError::Fenced);
+        }
+        self.objects.put(&key, bytes, Expect::Any).await?;
+        Ok(())
+    }
+
+    async fn install(
+        &self,
+        tenant: &TenantId,
+        account: &AccountId,
+        signed: &SignedHead,
+    ) -> Result<(), StorageError> {
+        let new = &signed.head;
+        if &new.tenant != tenant || &new.account != account {
+            return Err(IntegrityError::Scope.into());
+        }
+        new.check()?;
+        self.attestor
+            .verify(new, signed.attestation.as_deref())
+            .await?;
+        loop {
+            let (local, expect) = self.load_head(tenant, account).await?;
+            if new.fence.0 < local.fence {
+                return Err(StorageError::Fenced);
+            }
+            local.journal(tenant, account).check_successor(new)?;
+            if new.seq.0 == local.seq
+                && new.fence.0 == local.fence
+                && local.attestation == signed.attestation
+                && !matches!(expect, Expect::Absent)
+            {
+                return Ok(());
+            }
+            let mut chained = std::collections::HashSet::new();
+            if new.seq.0 > local.seq {
+                if local.seq > 0 && local.tip.is_none() {
+                    return Err(IntegrityError::Unchained { seq: local.seq }.into());
+                }
+                let mut chain = crate::Chain::new(self, new);
+                loop {
+                    let Some(segment) = chain.next().await? else {
+                        return Err(IntegrityError::Fork { seq: local.seq }.into());
+                    };
+                    chained.insert(segment.segment.name());
+                    if segment.prev == local.tip {
+                        if local.tip.is_none() && segment.segment.start.0 != 1 {
+                            return Err(IntegrityError::Link {
+                                seq: segment.segment.start.0,
+                            }
+                            .into());
+                        }
+                        break;
+                    }
+                    if segment.segment.start.0 <= local.seq + 1 {
+                        return Err(IntegrityError::Fork { seq: local.seq }.into());
+                    }
+                }
+            }
+            if !chained.is_empty() {
+                for (s, e, f, key) in self.segments_from(tenant, account, local.seq + 1).await? {
+                    if s > local.seq
+                        && e <= new.seq.0
+                        && f <= new.fence.0
+                        && !chained.contains(key.last())
+                    {
+                        self.objects.delete(&key, Expect::Any).await?;
+                    }
+                }
+            }
+            let committed = Head {
+                seq: new.seq.0,
+                fence: new.fence.0,
+                tip: new.tip.clone(),
+                attestation: signed.attestation.clone(),
+            };
+            let bytes = Bytes::from(serde_json::to_vec(&committed).expect("plain struct"));
+            match self
+                .objects
+                .put(&Self::head_key(tenant, account), bytes, expect)
+                .await
+            {
+                Ok(_) => {}
+                Err(StorageError::Conflict) => continue,
+                Err(e) => return Err(e),
+            }
+            self.marks.observe(tenant, account, &committed);
+            return Ok(());
+        }
+    }
+
     async fn signed_head(
         &self,
         tenant: &TenantId,
@@ -889,6 +1106,30 @@ impl Log for ObjectLog {
         }
         self.marks.forget(tenant);
         Ok(removed)
+    }
+
+    async fn purge_account(
+        &self,
+        tenant: &TenantId,
+        account: &AccountId,
+    ) -> Result<u64, StorageError> {
+        self.marks.begin_purge(tenant, account);
+        let result = async {
+            let mut removed = 0;
+            let head = ObjectKey::account(tenant, "heads", account)?;
+            if self.objects.get(&head).await?.is_some() {
+                self.objects.delete(&head, Expect::Any).await?;
+                removed += 1;
+            }
+            for area in ["log", "snapshots"] {
+                let prefix = ObjectKey::account(tenant, area, account)?;
+                removed += crate::delete_prefix(&*self.objects, &prefix, |_| false).await?;
+            }
+            Ok(removed)
+        }
+        .await;
+        self.marks.end_purge(tenant, account);
+        result
     }
 }
 

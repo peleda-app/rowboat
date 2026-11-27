@@ -644,26 +644,29 @@ async fn slow_and_idle_streams_are_closed_and_free_their_slot() {
     .await;
     let link = net.link(&w.laptop.id);
     let mut slow = net.raw(&link).await;
-    slow.write_all(&[0, 0]).await.unwrap();
     let started = tokio::time::Instant::now();
+    slow.write_all(&[0, 0]).await.unwrap();
     assert!(closed(&mut slow).await);
-    assert!(started.elapsed() <= Duration::from_millis(2_100));
+    assert_eq!(started.elapsed(), Duration::from_secs(2));
 
     let mut drip = net.raw(&link).await;
     let started = tokio::time::Instant::now();
-    for b in [0u8, 0, 0, 2, 1, 0] {
-        if drip.write_all(&[b]).await.is_err() {
-            break;
-        }
+    drip.write_all(&[0, 0, 0, 3]).await.unwrap();
+    for _ in 0..2 {
         tokio::time::sleep(Duration::from_millis(900)).await;
+        drip.write_all(&[0]).await.unwrap();
     }
     assert!(closed(&mut drip).await, "a frame dripped too slowly");
-    assert!(started.elapsed() <= Duration::from_millis(5_500));
+    assert_eq!(
+        started.elapsed(),
+        Duration::from_secs(2),
+        "the deadline runs from the first byte and covers the body"
+    );
 
     let mut idle = net.raw(&link).await;
     let started = tokio::time::Instant::now();
     assert!(closed(&mut idle).await);
-    assert!(started.elapsed() >= Duration::from_secs(60));
+    assert_eq!(started.elapsed(), Duration::from_secs(60));
 
     let c = GroupClient::connect(link, net.server_id.public(), ClientConfig::default())
         .await

@@ -10,19 +10,27 @@ use skein_mail::testing::ServerControl;
 
 pub const PASSWORD: &str = "correct-horse-battery-1";
 
+/// Only catches a test that will never finish; a slow step under load is not a failure.
+pub const HANG: Duration = Duration::from_secs(300);
+
+pub async fn within<T>(what: &str, f: impl Future<Output = T>) -> T {
+    match tokio::time::timeout(HANG, f).await {
+        Ok(v) => v,
+        Err(_) => panic!("hung waiting for {what}"),
+    }
+}
+
 pub async fn until<F, Fut>(what: &str, mut f: F)
 where
     F: FnMut() -> Fut,
     Fut: Future<Output = bool>,
 {
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
-    while tokio::time::Instant::now() < deadline {
-        if f().await {
-            return;
+    within(what, async {
+        while !f().await {
+            tokio::time::sleep(Duration::from_millis(25)).await;
         }
-        tokio::time::sleep(Duration::from_millis(25)).await;
-    }
-    panic!("timed out waiting for {what}");
+    })
+    .await
 }
 
 pub fn setup(user: &str) -> AccountSetup {

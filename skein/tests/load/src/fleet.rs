@@ -231,6 +231,25 @@ impl Log for RecordedLog {
         self.inner.head(tenant, account).await
     }
 
+    async fn stage(
+        &self,
+        tenant: &TenantId,
+        account: &AccountId,
+        segment: &SegmentRef,
+        bytes: Bytes,
+    ) -> Result<(), StorageError> {
+        self.inner.stage(tenant, account, segment, bytes).await
+    }
+
+    async fn install(
+        &self,
+        tenant: &TenantId,
+        account: &AccountId,
+        signed: &SignedHead,
+    ) -> Result<(), StorageError> {
+        self.inner.install(tenant, account, signed).await
+    }
+
     async fn signed_head(
         &self,
         tenant: &TenantId,
@@ -281,6 +300,14 @@ impl Log for RecordedLog {
 
     async fn purge(&self, tenant: &TenantId) -> Result<u64, StorageError> {
         self.inner.purge(tenant).await
+    }
+
+    async fn purge_account(
+        &self,
+        tenant: &TenantId,
+        account: &skein_core::AccountId,
+    ) -> Result<u64, StorageError> {
+        self.inner.purge_account(tenant, account).await
     }
 }
 

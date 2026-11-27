@@ -13,7 +13,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
-use baton_core::{GroupId, LeaseKey, NodeId, Timestamp};
+use baton_core::{FencingToken, GroupId, LeaseKey, NodeId, Timestamp};
 use baton_lease::record::{self, LeaseRecord, Reply, Step, View};
 use baton_lease::{Lease, LeaseError, Leases, Liveness, NodeProfile, TakeoverOutcome};
 use baton_state::{Expect, RecordName, StateError, StateStore, Version};
@@ -55,6 +55,10 @@ impl Observed {
         now.0.saturating_sub(entry.1).max(0)
     }
 }
+
+/// How far ahead of the arbiter's wall clock a floor passed to `acquire_above` may lie, in
+/// milliseconds, before it is ignored.
+pub const MAX_FLOOR_AHEAD_MS: u64 = 5 * 60_000;
 
 /// Leases in a [`StateStore`].
 pub struct CasLeases {
@@ -269,10 +273,29 @@ impl Leases for CasLeases {
         key: &LeaseKey,
         profile: &NodeProfile,
     ) -> Result<Option<Lease>, LeaseError> {
+        self.acquire_above(group, key, profile, FencingToken(0))
+            .await
+    }
+
+    /// Honours `floor` unless it lies more than [`MAX_FLOOR_AHEAD_MS`] ahead of this arbiter's
+    /// wall clock in microseconds (tokens are at least that clock in microseconds), in which case
+    /// it is ignored, so a caller cannot push a key's tokens so high that no later grant could
+    /// pass them.
+    async fn acquire_above(
+        &self,
+        group: &GroupId,
+        key: &LeaseKey,
+        profile: &NodeProfile,
+        floor: FencingToken,
+    ) -> Result<Option<Lease>, LeaseError> {
+        let limit = ((self.wall)().0.max(0) as u64)
+            .saturating_add(MAX_FLOOR_AHEAD_MS)
+            .saturating_mul(1000);
+        let floor = if floor.0 > limit { 0 } else { floor.0 };
         let next = |f| self.next_fence(f);
         match self
             .run(group, key, Some(&profile.node), |cur, view| {
-                record::acquire(cur, group, key, profile, view, &next)
+                record::acquire_above(cur, group, key, profile, view, floor, &next)
             })
             .await?
         {
@@ -351,6 +374,32 @@ impl CasLiveness {
 
     fn prefix() -> RecordName {
         RecordName::new("nodes").expect("constant")
+    }
+
+    /// The time written with `node`'s latest heartbeat in `group` (the clock of whoever wrote it:
+    /// on a lease server, the server's own), or `None` when it has none or the record is
+    /// unreadable. For display and for judging how long a node was silent; never for liveness.
+    pub async fn last_heartbeat(
+        &self,
+        group: &GroupId,
+        node: &NodeId,
+    ) -> Result<Option<Timestamp>, LeaseError> {
+        let name = RecordName::new(format!("nodes/{node}")).expect("a node id is a segment");
+        let Some((bytes, _)) = self
+            .state
+            .get(group, &name)
+            .await
+            .map_err(LeaseError::backend)?
+        else {
+            return Ok(None);
+        };
+        if bytes.len() > MAX_HEARTBEAT {
+            return Ok(None);
+        }
+        Ok(serde_json::from_slice::<Heartbeat>(&bytes)
+            .ok()
+            .filter(|b| b.v == 1 && &b.profile.node == node)
+            .map(|b| b.at))
     }
 }
 

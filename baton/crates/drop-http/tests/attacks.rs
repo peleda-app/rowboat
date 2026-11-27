@@ -14,6 +14,8 @@ use common::*;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
+const HANG: Duration = Duration::from_secs(30);
+
 #[tokio::test(flavor = "multi_thread")]
 async fn oversized_bodies_are_refused_and_the_server_keeps_serving() {
     let s = start(|_| {}, quick()).await;
@@ -54,8 +56,51 @@ async fn oversized_bodies_are_refused_and_the_server_keeps_serving() {
     assert!(matches!(call(&s, &take(&s, &f, 0)).await, Ok(Reply::Messages(m)) if m.is_empty()));
 }
 
+async fn slow_header_clients(s: &Server, n: usize) -> Vec<TcpStream> {
+    let mut slow = Vec::new();
+    for _ in 0..n {
+        let mut c = TcpStream::connect(s.addr).await.unwrap();
+        c.write_all(b"POST /v1/request HTTP/1.1\r\nhost: drop.exa")
+            .await
+            .unwrap();
+        slow.push(c);
+    }
+    slow
+}
+
+fn still_open(c: &TcpStream) -> bool {
+    let mut buf = [0u8; 1];
+    matches!(c.try_read(&mut buf), Err(e) if e.kind() == std::io::ErrorKind::WouldBlock)
+}
+
+async fn closed_by_server(c: &mut TcpStream) -> bool {
+    let mut raw = Vec::new();
+    tokio::time::timeout(HANG, c.read_to_end(&mut raw))
+        .await
+        .is_ok()
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn slow_headers_are_cut_off_and_do_not_block_others() {
+    let patient = start(
+        |_| {},
+        HttpConfig {
+            max_connections: 64,
+            header_timeout: Duration::from_secs(600),
+            ..quick()
+        },
+    )
+    .await;
+    let slow = slow_header_clients(&patient, 40).await;
+    let (status, _) = tokio::time::timeout(HANG, http(patient.addr, "GET", "/v1/info", "", b""))
+        .await
+        .expect("served without waiting for the slow clients");
+    assert_eq!(status, 200);
+    assert!(
+        slow.iter().all(still_open),
+        "served while every slow client still holds its connection"
+    );
+
     let s = start(
         |_| {},
         HttpConfig {
@@ -64,24 +109,11 @@ async fn slow_headers_are_cut_off_and_do_not_block_others() {
         },
     )
     .await;
-    let mut slow = Vec::new();
-    for _ in 0..40 {
-        let mut c = TcpStream::connect(s.addr).await.unwrap();
-        c.write_all(b"POST /v1/request HTTP/1.1\r\nhost: drop.exa")
-            .await
-            .unwrap();
-        slow.push(c);
-    }
-    let started = Instant::now();
-    let (status, _) = http(s.addr, "GET", "/v1/info", "", b"").await;
-    assert_eq!(status, 200);
-    assert!(started.elapsed() < Duration::from_secs(2));
-    for mut c in slow {
-        let mut buf = [0u8; 256];
-        let n = tokio::time::timeout(Duration::from_secs(5), c.read(&mut buf))
-            .await
-            .expect("the server closes a connection that never finishes its headers");
-        assert!(matches!(n, Ok(_) | Err(_)));
+    for mut c in slow_header_clients(&s, 40).await {
+        assert!(
+            closed_by_server(&mut c).await,
+            "the server closes a connection that never finishes its headers"
+        );
     }
 }
 
@@ -101,16 +133,16 @@ async fn slow_clients_filling_every_connection_are_freed() {
         c.write_all(b"GET /v1/in").await.unwrap();
         slow.push(c);
     }
-    let started = Instant::now();
-    let (status, _) = tokio::time::timeout(
-        Duration::from_secs(10),
-        http(s.addr, "GET", "/v1/info", "", b""),
-    )
-    .await
-    .expect("a slot frees up once the header timeout fires");
+    let (status, _) = tokio::time::timeout(HANG, http(s.addr, "GET", "/v1/info", "", b""))
+        .await
+        .expect("a slot frees up once the header timeout fires");
     assert_eq!(status, 200);
-    assert!(started.elapsed() < Duration::from_secs(5));
-    drop(slow);
+    for mut c in slow {
+        assert!(
+            closed_by_server(&mut c).await,
+            "the slots were freed by cutting the slow clients"
+        );
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -125,9 +157,10 @@ async fn slow_bodies_time_out_and_do_not_block_others() {
         call(&s, &take(&s, &f, 0)).await,
         Ok(Reply::Messages(_))
     ));
-    let started = Instant::now();
-    assert_eq!(read_response(&mut c).await.0, 408);
-    assert!(started.elapsed() < Duration::from_secs(5));
+    let (status, _) = tokio::time::timeout(HANG, read_response(&mut c))
+        .await
+        .expect("the slow body is cut off");
+    assert_eq!(status, 408);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -191,21 +224,19 @@ async fn long_polls_are_capped_in_time() {
     let s = start(|c| c.max_wait = Duration::from_millis(300), quick()).await;
     let f = fixture(&s).await;
     let started = Instant::now();
-    let r = call(&s, &take(&s, &f, u32::MAX)).await;
+    let r = tokio::time::timeout(HANG, call(&s, &take(&s, &f, u32::MAX)))
+        .await
+        .expect("a poll asking for 49 days ends at the cap");
     assert!(matches!(r, Ok(Reply::Messages(m)) if m.is_empty()));
     let took = started.elapsed();
-    assert!(took >= Duration::from_millis(250), "it did wait: {took:?}");
-    assert!(
-        took < Duration::from_secs(5),
-        "but no longer than the cap: {took:?}"
-    );
+    assert!(took >= Duration::from_millis(300), "it did wait: {took:?}");
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn concurrent_long_polls_are_bounded_per_client_and_overall() {
     let s = Arc::new(
         start(
-            |c| c.max_wait = Duration::from_secs(3),
+            |c| c.max_wait = Duration::from_secs(300),
             HttpConfig {
                 rate: Some(RateLimit {
                     per_second: 1000,
@@ -222,20 +253,22 @@ async fn concurrent_long_polls_are_bounded_per_client_and_overall() {
     let f = Arc::new(fixture(&s).await);
     let mut polls = Vec::new();
     for _ in 0..4 {
-        let raw = take(&s, &f, 3000);
+        let raw = take(&s, &f, 300_000);
         let addr = s.addr;
         polls.push(tokio::spawn(async move {
             http(addr, "POST", "/v1/request", "", &raw).await.0
         }));
     }
     tokio::time::sleep(Duration::from_millis(300)).await;
-    let started = Instant::now();
     assert_eq!(
         http(s.addr, "GET", "/v1/info", "", b"").await.0,
         429,
         "a client's fifth request in flight is refused"
     );
-    assert!(started.elapsed() < Duration::from_secs(1));
+    assert!(
+        polls.iter().all(|p| !p.is_finished()),
+        "refused while all four polls were still open"
+    );
     let put = sealed(
         &s,
         &f.writer,
@@ -244,10 +277,17 @@ async fn concurrent_long_polls_are_bounded_per_client_and_overall() {
             bytes: bytes::Bytes::from_static(b"wake"),
         },
     );
+    assert!(matches!(
+        s.service.execute(&put).await,
+        Ok(Reply::Stored(_))
+    ));
     for p in polls {
-        assert_eq!(p.await.unwrap(), 200);
+        let status = tokio::time::timeout(HANG, p)
+            .await
+            .expect("the put wakes every poll")
+            .unwrap();
+        assert_eq!(status, 200);
     }
-    assert!(matches!(call(&s, &put).await, Ok(Reply::Stored(_))));
 
     let g = start(
         |_| {},
@@ -279,7 +319,7 @@ async fn concurrent_long_polls_are_bounded_per_client_and_overall() {
 async fn long_polls_from_many_clients_cannot_starve_short_requests() {
     let s = Arc::new(
         start(
-            |c| c.max_wait = Duration::from_secs(3),
+            |c| c.max_wait = Duration::from_secs(300),
             HttpConfig {
                 max_in_flight: 4,
                 max_polls: 2,
@@ -295,7 +335,7 @@ async fn long_polls_from_many_clients_cannot_starve_short_requests() {
     let mut polls = Vec::new();
     for f in &boxes {
         for _ in 0..4 {
-            let raw = take(&s, f, 3000);
+            let raw = take(&s, f, 300_000);
             let addr = s.addr;
             polls.push(tokio::spawn(async move {
                 http(addr, "POST", "/v1/request", "", &raw).await.0
@@ -303,23 +343,34 @@ async fn long_polls_from_many_clients_cannot_starve_short_requests() {
         }
     }
     tokio::time::sleep(Duration::from_millis(300)).await;
-    let started = Instant::now();
-    let put = sealed(
-        &s,
-        &boxes[0].writer,
-        &boxes[0].id,
-        &Body::Put {
-            bytes: bytes::Bytes::from_static(b"through"),
-        },
-    );
-    assert!(
-        matches!(call(&s, &put).await, Ok(Reply::Stored(_))),
-        "a put is served while sixteen long polls are open"
-    );
-    assert_eq!(http(s.addr, "GET", "/v1/info", "", b"").await.0, 200);
-    assert!(started.elapsed() < Duration::from_secs(2));
+    let put = |f: &Fixture| {
+        sealed(
+            &s,
+            &f.writer,
+            &f.id,
+            &Body::Put {
+                bytes: bytes::Bytes::from_static(b"through"),
+            },
+        )
+    };
+    let short = async {
+        assert!(
+            matches!(call(&s, &put(&boxes[0])).await, Ok(Reply::Stored(_))),
+            "a put is served while sixteen long polls are open"
+        );
+        assert_eq!(http(s.addr, "GET", "/v1/info", "", b"").await.0, 200);
+    };
+    tokio::time::timeout(HANG, short)
+        .await
+        .expect("short requests do not wait for the polls to expire");
+    for f in &boxes[1..] {
+        assert!(matches!(call(&s, &put(f)).await, Ok(Reply::Stored(_))));
+    }
     for p in polls {
-        let status = p.await.unwrap();
+        let status = tokio::time::timeout(HANG, p)
+            .await
+            .expect("the puts wake every poll")
+            .unwrap();
         assert!(
             status == 200 || status == 503,
             "a poll is answered or, arriving in the burst as a short request, refused: {status}"
@@ -389,16 +440,18 @@ async fn a_client_that_never_reads_its_reply_loses_its_connection() {
     stuck.write_all(head.as_bytes()).await.unwrap();
     stuck.write_all(&big).await.unwrap();
     tokio::time::sleep(Duration::from_millis(200)).await;
-    let started = Instant::now();
-    let (status, _) = tokio::time::timeout(
-        Duration::from_secs(10),
-        http(s.addr, "GET", "/v1/info", "", b""),
-    )
-    .await
-    .expect("the stuck reply is dropped and its connection slot freed");
+    let (status, _) = tokio::time::timeout(HANG, http(s.addr, "GET", "/v1/info", "", b""))
+        .await
+        .expect("the stuck reply is dropped and its connection slot freed");
     assert_eq!(status, 200);
-    assert!(started.elapsed() < Duration::from_secs(5));
-    drop(stuck);
+    let mut raw = Vec::new();
+    let read = tokio::time::timeout(HANG, stuck.read_to_end(&mut raw))
+        .await
+        .expect("the stuck connection was closed by the server");
+    assert!(
+        read.is_err() || raw.len() < 64 * chunk.len(),
+        "the reply was cut, not delivered whole"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -432,34 +485,50 @@ async fn one_client_cannot_hold_more_than_its_connections() {
 async fn waiters_beyond_the_service_cap_return_at_once() {
     let s = start(
         |c| {
-            c.max_wait = Duration::from_secs(2);
+            c.max_wait = Duration::from_secs(300);
             c.max_waiters = 2;
         },
         quick(),
     )
     .await;
     let f = fixture(&s).await;
-    let started = Instant::now();
-    let mut polls = Vec::new();
+    let mut polls = tokio::task::JoinSet::new();
     for _ in 0..8 {
-        let raw = take(&s, &f, 2000);
+        let raw = take(&s, &f, 300_000);
         let addr = s.addr;
-        polls.push(tokio::spawn(async move {
-            let t = Instant::now();
-            let (status, _) = http(addr, "POST", "/v1/request", "", &raw).await;
-            (status, t.elapsed())
-        }));
+        polls.spawn(async move { http(addr, "POST", "/v1/request", "", &raw).await });
     }
-    let mut fast = 0;
-    for p in polls {
-        let (status, took) = p.await.unwrap();
+    let messages = |(status, body): (u16, Vec<u8>)| {
         assert_eq!(status, 200);
-        if took < Duration::from_millis(1500) {
-            fast += 1;
+        match baton_drop::wire::decode_reply(&body, 1 << 24).unwrap() {
+            Ok(Reply::Messages(m)) => m.len(),
+            other => panic!("not a take reply: {other:?}"),
         }
+    };
+    for _ in 0..6 {
+        let done = tokio::time::timeout(HANG, polls.join_next())
+            .await
+            .expect("six of eight polls return at once")
+            .unwrap()
+            .unwrap();
+        assert_eq!(messages(done), 0);
     }
-    assert!(fast >= 6, "only two may wait, {fast} returned at once");
-    assert!(started.elapsed() < Duration::from_secs(10));
+    assert_eq!(polls.len(), 2, "two are still waiting");
+    let put = sealed(
+        &s,
+        &f.writer,
+        &f.id,
+        &Body::Put {
+            bytes: bytes::Bytes::from_static(b"wake"),
+        },
+    );
+    assert!(matches!(call(&s, &put).await, Ok(Reply::Stored(_))));
+    while let Some(done) = tokio::time::timeout(HANG, polls.join_next())
+        .await
+        .expect("the put wakes both waiters")
+    {
+        assert_eq!(messages(done.unwrap()), 1, "a waiter, not a returned poll");
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]

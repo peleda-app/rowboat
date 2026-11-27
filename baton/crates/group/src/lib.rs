@@ -153,6 +153,59 @@ impl NodeCert {
         }
     }
 
+    /// The node's half of a certificate made on another device: the node signs the terms the
+    /// certifying member offers (its keys, class, the member and the expiry), proving it holds
+    /// its key. [`NodeCert::assemble`] adds the member's half.
+    pub fn node_proof(
+        node: &Identity,
+        kem: &KemPublic,
+        class: NodeClass,
+        member: &PublicKey,
+        expires: Timestamp,
+    ) -> Signature {
+        let body = postcard::to_stdvec(&CertBody {
+            node: &node.public(),
+            kem,
+            class,
+            member,
+            expires,
+        })
+        .expect("a certificate serializes");
+        node.sign(NODE_PROOF_CONTEXT, &body)
+    }
+
+    /// A certificate for a node whose key is elsewhere, from its [`NodeCert::node_proof`], signed
+    /// by `member`. Fails with [`GroupError::BadSignature`] when the proof is not the node's
+    /// signature over exactly these terms.
+    pub fn assemble(
+        member: &Identity,
+        node: PublicKey,
+        kem: KemPublic,
+        class: NodeClass,
+        expires: Timestamp,
+        node_signature: Signature,
+    ) -> Result<Self, GroupError> {
+        let body = postcard::to_stdvec(&CertBody {
+            node: &node,
+            kem: &kem,
+            class,
+            member: &member.public(),
+            expires,
+        })
+        .expect("a certificate serializes");
+        let cert = Self {
+            node,
+            kem,
+            class,
+            member: member.public(),
+            expires,
+            signature: member.sign(CERT_CONTEXT, &body),
+            node_signature,
+        };
+        cert.verify()?;
+        Ok(cert)
+    }
+
     fn verify(&self) -> Result<(), GroupError> {
         let body = postcard::to_stdvec(&CertBody {
             node: &self.node,
@@ -303,6 +356,12 @@ pub enum Op {
         member: Option<PublicKey>,
         /// The new key.
         recovery: RecoveryPublic,
+    },
+    /// A later expiry for a node that still counts: the same node, member, KEM key and class,
+    /// signed again by the member and the node. Authorized like [`Op::CertifyNode`].
+    RenewNode {
+        /// The renewed certificate.
+        cert: NodeCert,
     },
 }
 

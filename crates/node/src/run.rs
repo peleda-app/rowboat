@@ -4,15 +4,13 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use baton_lease::{Leases, Liveness};
-use baton_lease_cas::{CasLeases, CasLiveness};
-use baton_state::StateStore;
 use rowboat_api::{AccountId, DomainState, Health, NodeEvent};
 use skein_accounts::{Directory, OAuthClients, Senders, TenantRegistry};
 use skein_core::{AccountHealth, CommandBody, DomainStatus};
-use skein_engine::{Engine, OneGroupLiveness, RunConfig, SendPolicy, node_profile};
+use skein_engine::{Engine, RunConfig, SendPolicy};
 use skein_keyring::KeyScope;
 use skein_oauth::{OAuthError, TokenAnswer, TokenEndpoint};
-use skein_storage::{ControlState, Expect, ObjectKey};
+use skein_storage::{Expect, ObjectKey};
 use skein_view::{Follower, Timing};
 use tokio::sync::mpsc;
 use tracing::{info, warn};
@@ -42,20 +40,18 @@ impl Node {
         let timing = core.profile.timing();
         let mut tasks = Vec::new();
 
-        let heartbeat_ms = timing.heartbeat.as_millis() as u64;
-        let state: Arc<dyn StateStore> = Arc::new(ControlState::new(core.storage.control.clone()));
-        let liveness: Arc<dyn Liveness> = Arc::new(OneGroupLiveness::nodes(Arc::new(
-            CasLiveness::new(state.clone(), heartbeat_ms * 3),
-        )));
-        let cas = Arc::new(CasLeases::new(state, liveness.clone()).reuse_alive_for(heartbeat_ms));
-        let _ = core.leases.set(cas.clone());
-        let leases: Arc<dyn Leases> = cas;
-        let profile = node_profile(
-            baton_core::NodeId::new(core.node_id.clone()).expect("an identity's id"),
-            1,
-            false,
-        );
+        let liveness: Arc<dyn Liveness> = core.arbiter.clone();
+        let leases: Arc<dyn Leases> = core.arbiter.clone();
+        let profile = baton_lease::NodeProfile {
+            node: baton_core::NodeId::new(core.node_id.clone()).expect("an identity's id"),
+            class: core.group.certified_class(),
+            weight: 1,
+            can_run: core.can_run.load(std::sync::atomic::Ordering::SeqCst),
+        };
         let engine = Engine::new(core.storage.clone(), leases, core.signal.clone(), profile)
+            .with_lease_hooks(Arc::new(crate::handover::NodeHooks {
+                core: Arc::downgrade(&core),
+            }))
             .without_message_inspection()
             .with_senders(Arc::new(Senders::new(
                 core.accounts.clone(),
@@ -67,6 +63,16 @@ impl Node {
                 undo_ms: timing.undo_ms,
                 ..SendPolicy::default()
             });
+        let _ = core.engine.set(engine.clone());
+        let weak = Arc::downgrade(&core);
+        core.arbiter.on_change(move || {
+            if let Some(c) = weak.upgrade() {
+                if let Some(e) = c.engine.get() {
+                    e.lapse();
+                }
+                c.group.raise(rowboat_api::GroupEvent::LeadersChanged);
+            }
+        });
         let directory = Arc::new(Directory::new(
             TenantRegistry::new(core.objects.clone()),
             core.accounts.clone(),
@@ -75,8 +81,20 @@ impl Node {
             core.providers.mail.clone(),
         ));
         let mut run = RunConfig::new(liveness);
+        run.nodes = skein_core::coordination::group(&core.tenant);
+        crate::leases::refresh_eligibility(&core).await;
+        run.eligible = Some(Arc::new(crate::leases::LeadEligible(Arc::downgrade(&core))));
         run.heartbeat = timing.heartbeat;
         run.interval = timing.interval;
+        run.stop_wait = timing.shutdown;
+        run.push = core.push.as_ref().map(|p| skein_engine::PushConfig {
+            renewer: Arc::new(skein_push::Renewer::new(skein_push::PushRegistry::new(
+                p.registry.clone(),
+                core.storage.control.clone(),
+            ))),
+            public_url: p.public_url.clone(),
+            gmail_topic: p.gmail_topic.clone(),
+        });
         let mut stop = self.stop.subscribe();
         tasks.push(tokio::spawn(async move {
             skein_engine::run(engine, directory, run, async move {
@@ -140,11 +158,75 @@ impl Node {
             timing.heartbeat,
             self.stop.subscribe(),
         )));
+        let group = core.group.clone();
+        let group_every = match core.profile {
+            crate::Profile::Test(t) => t.poll * 4,
+            _ => crate::group::SYNC_EVERY,
+        };
+        let mut group_stop = self.stop.subscribe();
+        tasks.push(tokio::spawn(async move {
+            group.renew().await;
+            group.sync_now().await;
+            let mut tick = tokio::time::interval(group_every);
+            tick.tick().await;
+            loop {
+                let stopped = tokio::select! {
+                    _ = tick.tick() => false,
+                    r = group_stop.wait_for(|s| *s) => {
+                        drop(r);
+                        true
+                    }
+                };
+                if stopped {
+                    break;
+                }
+                group.renew().await;
+                group.sync_now().await;
+            }
+            group.shutdown().await;
+        }));
+        {
+            let arbiter = core.arbiter.clone();
+            let wake = arbiter.woken();
+            let every = timing.heartbeat;
+            let mut stop = self.stop.subscribe();
+            tasks.push(tokio::spawn(async move {
+                let mut tick = tokio::time::interval(every);
+                tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                loop {
+                    tokio::select! {
+                        _ = tick.tick() => {}
+                        _ = wake.notified() => {}
+                        r = stop.wait_for(|s| *s) => {
+                            drop(r);
+                            break;
+                        }
+                    }
+                    arbiter.watch_round().await;
+                }
+            }));
+        }
+        let (tick, rounds) = match core.profile {
+            crate::Profile::Desktop | crate::Profile::Server => {
+                (Duration::from_secs(2), timing.rounds)
+            }
+            crate::Profile::Test(t) => (t.poll, t.rounds),
+        };
+        tasks.push(tokio::spawn(crate::sync::run(
+            core.clone(),
+            tick,
+            rounds,
+            self.stop.subscribe(),
+        )));
         for meta in crate::api::all_metas(&core).await.unwrap_or_default() {
             if meta.removing {
                 spawn_removal(core.clone(), meta.account.clone());
             }
         }
+        tasks.push(tokio::spawn(watch_revocation(
+            core.clone(),
+            self.stop.subscribe(),
+        )));
         info!(node = %core.node_id, "node started");
         self.tasks
             .lock()
@@ -152,16 +234,136 @@ impl Node {
             .extend(tasks);
     }
 
-    /// Stops the engine (which releases every lease it holds), the follower and housekeeping,
-    /// waiting at most 30 s for each.
+    /// On the group's server: stops arbitrating the group's leases for good and sends every
+    /// device a signed leaving notice, so they take the accounts over under a fallback arbiter at
+    /// once instead of after the takeover delay (GROUP.md, "When the server is silent"). Call it
+    /// after handing the accounts back ([`Node::set_can_run`]) and before [`Node::shutdown`].
+    /// The notice tells the devices this server released everything, so they repeat even what
+    /// cannot be repeated: while this node still leads an account or a worker of one still runs
+    /// (the hand-back did not finish), nothing is sent and the devices fall back by silence.
+    /// Returns whether the notice went out; on any other node it does nothing and returns false.
+    /// The next start believes the devices that took over meanwhile.
+    pub async fn announce_leaving(&self) -> bool {
+        let Ok(metas) = crate::api::all_metas(&self.core).await else {
+            return false;
+        };
+        let accounts: Vec<skein_core::AccountId> = metas
+            .into_iter()
+            .filter_map(|m| skein_core::AccountId::new(m.account.as_str()).ok())
+            .collect();
+        let busy = |core: &Core| {
+            accounts
+                .iter()
+                .filter(|a| {
+                    core.leads(a.as_str())
+                        || core
+                            .engine
+                            .get()
+                            .is_some_and(|e| e.has_worker(&core.tenant, a))
+                })
+                .cloned()
+                .collect::<Vec<_>>()
+        };
+        let waiting = busy(&self.core);
+        if !waiting.is_empty()
+            && let Some(engine) = self.core.engine.get()
+        {
+            let settle = futures::future::join_all(
+                waiting.iter().map(|a| engine.let_go(&self.core.tenant, a)),
+            );
+            let _ = tokio::time::timeout(self.core.profile.timing().heartbeat * 2, settle).await;
+        }
+        let busy = busy(&self.core);
+        if !busy.is_empty() {
+            warn!(
+                accounts = busy.len(),
+                "not announcing the leave: the hand-back did not finish"
+            );
+            return false;
+        }
+        self.core.arbiter.announce_leaving().await
+    }
+
+    /// Stops the engine (which releases every lease it holds and aborts a worker still busy
+    /// after the profile's shutdown time, 30 s on the desktop), the follower and housekeeping,
+    /// aborting any of them still running after twice that time, then ends the node's background
+    /// work (a removal resumes on the next start) and closes the data directory once the storage
+    /// calls in progress finish. When this returns the directory can be opened again; this node
+    /// and its `NodeApi` handles answer storage errors from then on.
     pub async fn shutdown(&self) {
+        self.stop_tasks().await;
+        self.core.directory.close().await;
+        info!(node = %self.core.node_id, "node stopped");
+    }
+
+    pub(crate) async fn stop_tasks(&self) {
         let _ = self.stop.send(true);
         let tasks: Vec<_> =
             std::mem::take(&mut *self.tasks.lock().unwrap_or_else(|e| e.into_inner()));
+        let limit = self.core.profile.timing().shutdown * 2;
         for task in tasks {
-            let _ = tokio::time::timeout(Duration::from_secs(30), task).await;
+            crate::tasks::join_within(task, limit).await;
         }
-        info!(node = %self.core.node_id, "node stopped");
+        self.core.arbiter.stop().await;
+        self.core.group.shutdown().await;
+        self.core.background.stop().await;
+    }
+
+    /// Ends the node as a crash would: every task is aborted at once, no lease is released and
+    /// nothing is handed over, then the link and the data directory close. For the tests of a
+    /// holder that disappears.
+    #[cfg(feature = "testing")]
+    pub async fn kill_for_tests(&self) {
+        let _ = self.stop.send(true);
+        let tasks: Vec<_> =
+            std::mem::take(&mut *self.tasks.lock().unwrap_or_else(|e| e.into_inner()));
+        for t in &tasks {
+            t.abort();
+        }
+        for t in tasks {
+            let _ = t.await;
+        }
+        self.core.arbiter.stop().await;
+        self.core.group.shutdown().await;
+        self.core.background.stop().await;
+        self.core.directory.close().await;
+    }
+}
+
+async fn watch_revocation(core: Arc<Core>, mut stop: tokio::sync::watch::Receiver<bool>) {
+    use futures::StreamExt;
+    let mut events = core.group.subscribe();
+    let mut fired = false;
+    let mut fire = |core: &Core| {
+        if fired {
+            return;
+        }
+        fired = true;
+        warn!("this node was revoked; it stops leading");
+        core.can_run
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        if let Some(e) = core.engine.get() {
+            e.set_can_run(false);
+        }
+        if let Some(hook) = &core.on_revoked {
+            hook();
+        }
+    };
+    if core.group.membership().is_ok_and(|m| m.is_revoked()) {
+        fire(&core);
+    }
+    loop {
+        tokio::select! {
+            e = events.next() => match e {
+                Some(rowboat_api::GroupEvent::NodeRevoked) => fire(&core),
+                Some(_) => {}
+                None => break,
+            },
+            r = stop.wait_for(|s| *s) => {
+                drop(r);
+                break;
+            }
+        }
     }
 }
 
@@ -279,7 +481,7 @@ async fn refresh_statuses(core: &Core) {
     }
 }
 
-/// Finishes removing an account in the background, after the engine let go of it.
+/// Finishes removing an account in the background, once the engine let go of it.
 pub(crate) fn spawn_removal(core: Arc<Core>, account: AccountId) {
     if !core
         .removing
@@ -289,8 +491,14 @@ pub(crate) fn spawn_removal(core: Arc<Core>, account: AccountId) {
     {
         return;
     }
-    tokio::spawn(async move {
-        tokio::time::sleep(core.profile.timing().removal_grace).await;
+    let task_core = core.clone();
+    task_core.background.spawn(async move {
+        if let (Some(engine), Ok(id)) = (
+            core.engine.get(),
+            skein_core::AccountId::new(account.as_str()),
+        ) {
+            engine.let_go(&core.tenant, &id).await;
+        }
         match remove_now(&core, &account).await {
             Ok(blobs) => info!(account = %account, blobs, "account removed"),
             Err(e) => {
@@ -337,19 +545,36 @@ async fn remove_now(core: &Core, account: &AccountId) -> Result<u64, rowboat_api
         .destroy(&KeyScope::account_of(&core.tenant, &id))
         .await
         .map_err(|_| rowboat_api::NodeError::Storage)?;
+    core.local
+        .log
+        .purge_account(&core.tenant, &id)
+        .await
+        .map_err(crate::errors::storage)?;
     skein_storage::purge_account(&*core.objects, &core.tenant, &id)
         .await
         .map_err(crate::errors::storage)?;
-    if let Some(leases) = core.leases.get() {
-        let forgotten = leases
-            .forget(
-                &skein_core::coordination::group(&core.tenant),
-                &skein_core::coordination::lease_key(&id),
-            )
-            .await
-            .map_err(|_| rowboat_api::NodeError::Storage)?;
-        if !forgotten {
-            warn!(account = %account, "the account's lease is still held; its record stays");
+    {
+        let group = skein_core::coordination::group(&core.tenant);
+        let key = skein_core::coordination::lease_key(&id);
+        let arbiter: &dyn Leases = &*core.arbiter;
+        if let Ok(Some(lease)) = arbiter.holder(&group, &key).await
+            && lease.node.as_str() == core.node_id
+        {
+            arbiter
+                .release(&lease)
+                .await
+                .map_err(|_| rowboat_api::NodeError::Storage)?;
+        }
+        if !core.arbiter.shared() {
+            let forgotten = core
+                .arbiter
+                .local()
+                .forget(&group, &key)
+                .await
+                .map_err(|_| rowboat_api::NodeError::Storage)?;
+            if !forgotten {
+                warn!(account = %account, "the account's lease is still held; its record stays");
+            }
         }
     }
     let s = store.clone();

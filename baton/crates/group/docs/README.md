@@ -12,6 +12,7 @@ A hash-chained sequence of `Entry`s (`v`, group, `seq`, `prev` = BLAKE3 of the p
 | `AddMember` | a node of an admin (plain members) or an owner (admins and owners) | member key and recovery keys never used before in any role; recovery key self-signed |
 | `RemoveMember` | the member's own node or recovery key, an owner, an admin (for plain members), the group recovery key | the last owner stays; a removed key never returns |
 | `RekeyMember` | the member's recovery key only | the new key was never used; role, recovery key, grants and resource creation move to it; the old key and its nodes stop counting |
+| `RenewNode` | as `CertifyNode` | a later expiry for a node that counts, with the same member, KEM key and class, signed again by the member and the node |
 | `CertifyNode` | a node of the same member, an owner's node, an admin's node (for plain members), the member's or the group's recovery key | signed by the member key (`baton-node-cert-v1`) **and by the node key** (`baton-node-cert-proof-v1`), not expired, node key never used before in any role |
 | `RevokeNode` | a node of the same member, an owner's node, an admin's node (for plain members' nodes), the member's or the group's recovery key | for good |
 | `CreateResource` | any non-blind node | its member is the creator and gets read, lead and admin |
@@ -23,7 +24,9 @@ A hash-chained sequence of `Entry`s (`v`, group, `seq`, `prev` = BLAKE3 of the p
 
 Entry times never go back (`at` ≥ the previous entry's), so an expired server cannot backdate; `GroupLog::apply_fresh(entry, now, skew)` also refuses entries from the future when they arrive. `Entry::decode` refuses non-canonical bytes. Applying an entry checks everything before changing anything, in place, so verifying a log is linear.
 
-Node certificates count only while not revoked, not expired at the entry's time, and their member is in the group; `GroupState::was_certified` says whether a key was ever certified (revoked or not), so a server can stop admitting a bootstrap key once the log has taken it over. A node's capabilities on a resource are the grants to its member and to itself.
+Node certificates count only while not revoked, not expired at the entry's time, and their member is in the group; `GroupState::was_certified` says whether a key was ever certified (revoked or not), so a server can stop admitting a bootstrap key once the log has taken it over. A node's capabilities on a resource are the grants to itself and, for desktops and phones, the grants to its member; a server holds only the grants to itself and blind nodes nothing. A server signs no member-level entry: `AddMember`, `RemoveMember`, `CertifyNode`, `RenewNode` and `CreateResource` are refused from a server, and `RevokeNode` only for itself.
+
+A certificate for a node whose key is on another device is made in two halves: the node signs the terms with `NodeCert::node_proof(node, kem, class, member, expires)`, and the certifying member completes it with `NodeCert::assemble`, which refuses a proof that does not cover exactly those terms.
 
 ## Keys and epochs (`epochs`)
 

@@ -1,0 +1,27 @@
+# One rowboat host. Data and keys live in separate volumes (a copy of the data alone opens
+# nothing); mail databases live in memory and are rebuilt on every start.
+#   docker compose -f compose.example.yaml up -d
+#   docker compose -f compose.example.yaml exec rowboat cat /secrets/first-run-invite.txt   # the first-run invite (never in the logs)
+#   docker compose -f compose.example.yaml exec rowboat rowboat invite --tenant new
+#   docker compose -f compose.example.yaml exec rowboat rowboat status
+services:
+  rowboat:
+    image: rowboat
+    build:
+      context: ../../..
+      dockerfile: rowboat/apps/rowboat/Dockerfile
+    restart: unless-stopped
+    stop_grace_period: 60s       # tenants hand their accounts back before stopping
+    volumes:
+      - ./rowboat.example.toml:/etc/rowboat/rowboat.toml:ro
+      - rowboat-data:/data
+      - rowboat-secrets:/secrets
+    tmpfs:
+      - /cache:uid=10001,gid=10001,mode=0700
+    ports:
+      - '8080:8080'              # provider push and GET /v1/health only
+      - '4400-4499:4400-4499/udp' # the tenants' links and pairing endpoints (link.ports)
+
+volumes:
+  rowboat-data:
+  rowboat-secrets:

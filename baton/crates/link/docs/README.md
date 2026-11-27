@@ -25,6 +25,7 @@ Implementations: `baton-link-memory` (in-process, for tests), `baton-link-iroh` 
 
 - An implementation refuses an untrusted peer in both directions before any application byte is read or written.
 - The trust is asked again for every new stream (not only every new connection), so a revocation applies to the next stream immediately, even over a connection that is already up.
+- A trust may admit a peer on some protocols only (`Trust::allows_on`, with `Trust::reachable` for whether it may connect at all): a link then accepts and opens that peer's streams on those protocols only, both ways. By default both answer `allows`. The node uses it to let a revoked node reach the one protocol that tells it it was revoked.
 - Streams already open when a peer is revoked keep working until either side closes them, the link closes, or `disconnect_untrusted` is called. The composition root calls `disconnect_untrusted` right after moving the roster or unpinning a key.
 
 ## Dependencies

@@ -181,8 +181,9 @@ mod tests {
         })
         .unwrap();
         let url = HttpsUrl::new("autoconfig.example.com", "/x").unwrap();
-        let started = std::time::Instant::now();
-        assert_eq!(fetcher.get(&url, 1024).await, Err(DiscoverError::Timeout));
-        assert!(started.elapsed() < Duration::from_secs(5));
+        let got = tokio::time::timeout(Duration::from_secs(30), fetcher.get(&url, 1024))
+            .await
+            .expect("the fetcher's own timeout fires");
+        assert_eq!(got, Err(DiscoverError::Timeout));
     }
 }

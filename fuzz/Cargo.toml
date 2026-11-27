@@ -13,11 +13,15 @@ kind = "fuzz"
 
 [dependencies]
 libfuzzer-sys = "0.4"
+serde_json = "1"
 rowboat-api = { path = "../crates/api" }
 rowboat-node = { path = "../crates/node" }
 rowboat-discover = { path = "../crates/discover" }
 rowboat-discover-autoconfig = { path = "../crates/discover-autoconfig" }
 rowboat-discover-net = { path = "../crates/discover-net" }
+rowboat-group = { path = "../crates/group" }
+rowboat-sync = { path = "../crates/sync" }
+rowboat = { path = "../apps/rowboat" }
 
 [lints.rust]
 unsafe_code = "forbid"
@@ -54,6 +58,34 @@ bench = false
 [[bin]]
 name = "discover_dns"
 path = "fuzz_targets/discover_dns.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "group_codes"
+path = "fuzz_targets/group_codes.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "group_wire"
+path = "fuzz_targets/group_wire.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "sync_wire"
+path = "fuzz_targets/sync_wire.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "server_records"
+path = "fuzz_targets/server_records.rs"
 test = false
 doc = false
 bench = false

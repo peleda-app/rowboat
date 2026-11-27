@@ -1,6 +1,6 @@
 [package]
 name = "rowboat-load"
-description = "Node load tests: first sync of many messages, list and search latency, many mark-reads settling"
+description = "Node load tests: first sync of many messages, list and search latency, many mark-reads settling, replication to a second node, many accounts handed over to a server at once"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -14,6 +14,9 @@ kind = "test"
 [dependencies]
 rowboat-api.workspace = true
 rowboat-node = { workspace = true, features = ["testing"] }
+rowboat-endpoint.workspace = true
+rowboat-endpoint-memory.workspace = true
+baton-lease.workspace = true
 thiserror.workspace = true
 clap.workspace = true
 futures.workspace = true

@@ -239,6 +239,128 @@ pub async fn validation(api: &dyn NodeApi) {
         "knows",
     );
     assert!(api.outbox().await.is_ok());
+
+    group(api, &info).await;
+}
+
+async fn group(api: &dyn NodeApi, info: &NodeInfo) {
+    let canary_code = format!("peleda-pair:{CANARY}\n");
+    let long = "A".repeat(group::MAX_PAIRING_TEXT + 1);
+    for bad in ["", "   ", canary_code.as_str(), long.as_str()] {
+        assert_kind(
+            api.accept_invite(bad, None).await,
+            NodeError::InvalidInput,
+            "pairing code",
+        );
+    }
+    assert_kind(
+        api.accept_invite("peleda-pair:!!!!", None).await,
+        NodeError::InvalidInput,
+        "undecodable QR",
+    );
+    assert_kind(
+        api.accept_invite("7K-Q2M9-XA3B", None).await,
+        NodeError::InvalidInput,
+        "a short code needs its address",
+    );
+    assert_kind(
+        api.accept_invite("7K-Q2M9-XA3B", Some(CANARY)).await,
+        NodeError::InvalidInput,
+        "a bad address",
+    );
+    assert_kind(
+        api.confirm_pairing("0123456789abcdef", true).await,
+        NodeError::NotFound,
+        "nothing waits",
+    );
+    assert_kind(
+        api.confirm_pairing(CANARY, true).await,
+        NodeError::InvalidInput,
+        "pairing id",
+    );
+    assert_kind(
+        api.cancel_invite("0123456789abcdef").await,
+        NodeError::NotFound,
+        "unknown invite",
+    );
+    assert_kind(
+        api.revoke_node(CANARY).await,
+        NodeError::InvalidInput,
+        "node id",
+    );
+    assert_kind(
+        api.revoke_node(&info.node_id).await,
+        NodeError::InvalidInput,
+        "revoking itself",
+    );
+    assert_kind(
+        api.revoke_node(&"a".repeat(52)).await,
+        NodeError::NotFound,
+        "a node the group never had",
+    );
+    for bad in ["", canary_code.as_str(), "peleda-pair:!!!!", long.as_str()] {
+        assert_kind(
+            api.inspect_invite(bad, None).await,
+            NodeError::InvalidInput,
+            "inspected code",
+        );
+        assert_kind(
+            api.adopt_server(bad, None, &[]).await,
+            NodeError::InvalidInput,
+            "adoption code",
+        );
+    }
+    assert_kind(
+        api.grant_to_server(CANARY, &[]).await,
+        NodeError::InvalidInput,
+        "server id",
+    );
+    assert_kind(
+        api.grant_to_server(&"a".repeat(52), &[]).await,
+        NodeError::NotFound,
+        "a server the group never had",
+    );
+    assert_kind(
+        api.rename_node(CANARY, Some("name")).await,
+        NodeError::InvalidInput,
+        "renamed node id",
+    );
+    for bad in ["", " ", "a\nb", &"a".repeat(group::MAX_NODE_LABEL + 1)] {
+        assert_kind(
+            api.rename_node(&info.node_id, Some(bad)).await,
+            NodeError::InvalidInput,
+            "node name",
+        );
+    }
+    assert_kind(
+        api.rename_node(&"a".repeat(52), Some("name")).await,
+        NodeError::NotFound,
+        "naming a node the group never had",
+    );
+    api.rename_node(&info.node_id, Some("Suite")).await.unwrap();
+    let named = api.list_nodes().await.unwrap();
+    assert_eq!(
+        named
+            .iter()
+            .find(|n| n.this_node)
+            .and_then(|n| n.label.as_deref()),
+        Some("Suite")
+    );
+    api.rename_node(&info.node_id, None).await.unwrap();
+    let status = api.group_status().await.unwrap();
+    let mut accounts: Vec<_> = status.leaders.iter().map(|l| l.account.clone()).collect();
+    accounts.sort();
+    accounts.dedup();
+    assert_eq!(accounts.len(), status.leaders.len(), "each account once");
+
+    let nodes = api.list_nodes().await.unwrap();
+    let mine: Vec<_> = nodes.iter().filter(|n| n.this_node).collect();
+    assert_eq!(mine.len(), 1, "exactly one node is this one");
+    assert_eq!(mine[0].node_id, info.node_id);
+    assert!(mine[0].counts && !mine[0].revoked);
+    let mut sorted = nodes.clone();
+    sorted.sort_by(|a, b| a.node_id.cmp(&b.node_id));
+    assert_eq!(nodes, sorted, "sorted by node id");
 }
 
 /// Paging stability and pending changes on an account that holds at least three messages in

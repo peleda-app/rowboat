@@ -286,6 +286,11 @@ impl Command {
         self.body.epoch
     }
 
+    /// The node that signed it (checked only by [`Command::check`]).
+    pub fn issuer(&self) -> &PublicKey {
+        &self.body.issuer
+    }
+
     /// Everything a leaseholder of `resource` checks before handing a command to its worker:
     /// signature; same group and `resource`; a valid class; a time window of at most
     /// [`MAX_TTL_MS`], not stamped more than [`MAX_SKEW_MS`] ahead of `now` and not expired; that

@@ -7,6 +7,7 @@
 ### `FsObjects`
 
 - `FsObjects::open(root) -> Result<FsObjects, OpenError>` opens the store as its owner: creates `root` when missing (mode `0700` on unix), canonicalizes it and takes an exclusive advisory lock on `<root>/.lock`. The lock lives as long as the handle; dropping the handle releases it. A second owner fails with `OpenError::Locked`, which is what keeps a second `skein serve` (or node) off a directory.
+- `FsObjects::close()` waits for every operation in progress (one whose caller was cancelled included), then refuses every later one with `StorageError::Backend` and releases the owner lock, so the root can be opened again while clones of the handle still exist (a task that outlived its owner can no longer write). Calling it again does nothing.
 - `FsObjects::open_shared(root) -> Result<FsObjects, OpenError>` opens the same store without the owner lock, beside a running owner or alone. Management tools (the `skein` subcommands, export, import, copy) use it.
 - `FsObjects::root()` is the canonical root directory.
 - `impl Objects for FsObjects`, with these guarantees beyond the contract:

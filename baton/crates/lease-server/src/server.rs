@@ -1,8 +1,9 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use baton_core::NodeId;
-use baton_lease::{LeaseError, Leases, Liveness};
+use async_trait::async_trait;
+use baton_core::{FencingToken, GroupId, LeaseKey, NodeId, Timestamp};
+use baton_lease::{Lease, LeaseError, Leases, Liveness, NodeProfile, TakeoverOutcome};
 use baton_lease_cas::{CasLeases, CasLiveness, Clock};
 use baton_link::{Duplex, Link, LinkError, Protocol, PublicKey};
 use baton_state::StateStore;
@@ -30,6 +31,8 @@ use crate::{Authorize, PROTOCOL, ServerConfig};
 ///   server is the one observer for all its clients. Every heartbeat reply states the
 ///   time-to-live, and holders are judged gone only after
 ///   `max(`[`ServerConfig::ttl_ms`]`, `[`ServerConfig::previous_ttl_ms`]`)`.
+/// - For [`ServerConfig::grace_ms`] after start, an acquire is granted only to the node the
+///   key's record already names, on the server's link and to [`LeaseServer::leases`] alike.
 /// - What a peer can make the server spend is bounded: [`ServerConfig::max_streams`] streams in
 ///   all, [`ServerConfig::max_per_peer`] per peer (more are closed at once), a request body of
 ///   at most [`wire::MAX_REQUEST`] bytes that must arrive within
@@ -40,8 +43,9 @@ use crate::{Authorize, PROTOCOL, ServerConfig};
 ///   stream.
 /// - Dropping the server (or [`LeaseServer::stop`]) stops accepting and severs every stream.
 pub struct LeaseServer {
-    leases: Arc<CasLeases>,
+    leases: Arc<Graced>,
     liveness: Arc<CasLiveness>,
+    endorse: Option<Arc<dyn crate::Endorse>>,
     task: Option<JoinHandle<()>>,
 }
 
@@ -54,7 +58,7 @@ impl Drop for LeaseServer {
 }
 
 struct Ctx {
-    leases: Arc<CasLeases>,
+    leases: Arc<Graced>,
     liveness: Arc<CasLiveness>,
     authorize: Arc<dyn Authorize>,
     clock: Clock,
@@ -97,9 +101,14 @@ impl LeaseServer {
             state.clone(),
             config.ttl_ms.max(config.previous_ttl_ms),
         ));
-        let leases = Arc::new(
-            CasLeases::new(state, liveness.clone() as Arc<dyn Liveness>).with_clock(clock.clone()),
-        );
+        let until = (clock)().plus_ms(config.grace_ms.min(i64::MAX as u64) as i64);
+        let leases = Arc::new(Graced {
+            inner: CasLeases::new(state, liveness.clone() as Arc<dyn Liveness>)
+                .with_clock(clock.clone()),
+            clock: clock.clone(),
+            until,
+        });
+        let endorse = config.endorse.clone();
         let ctx = Arc::new(Ctx {
             leases: leases.clone(),
             liveness: liveness.clone(),
@@ -141,8 +150,33 @@ impl LeaseServer {
         Ok(Self {
             leases,
             liveness,
+            endorse,
             task: Some(task),
         })
+    }
+
+    /// The endorsement of `lease` for the server's own process: given only when the server's
+    /// record names `lease.node` as holder with `lease.fence` (see [`crate::Endorse`]).
+    pub async fn endorse(&self, lease: &Lease) -> Option<Vec<u8>> {
+        endorsement(
+            &self.leases,
+            self.endorse.as_deref(),
+            &lease.group,
+            &lease.key,
+            &lease.node,
+            lease.fence,
+        )
+        .await
+    }
+
+    /// The server's clock time of `node`'s latest heartbeat in `group`, kept across restarts
+    /// over the same store, or `None` when it has none. For judging how long a node was silent.
+    pub async fn last_heartbeat(&self, group: &GroupId, node: &NodeId) -> Option<Timestamp> {
+        self.liveness
+            .last_heartbeat(group, node)
+            .await
+            .ok()
+            .flatten()
     }
 
     /// The server's own leases, for work the server process does itself.
@@ -163,6 +197,77 @@ impl LeaseServer {
             let _ = task.await;
         }
     }
+}
+
+/// [`CasLeases`] that grants only renewals until `until`.
+struct Graced {
+    inner: CasLeases,
+    clock: Clock,
+    until: Timestamp,
+}
+
+#[async_trait]
+impl Leases for Graced {
+    async fn acquire(
+        &self,
+        group: &GroupId,
+        key: &LeaseKey,
+        profile: &NodeProfile,
+    ) -> Result<Option<Lease>, LeaseError> {
+        self.acquire_above(group, key, profile, FencingToken(0))
+            .await
+    }
+
+    async fn acquire_above(
+        &self,
+        group: &GroupId,
+        key: &LeaseKey,
+        profile: &NodeProfile,
+        floor: FencingToken,
+    ) -> Result<Option<Lease>, LeaseError> {
+        if (self.clock)() < self.until {
+            let holder = self.inner.holder(group, key).await?;
+            if holder.is_none_or(|l| l.node != profile.node) {
+                return Ok(None);
+            }
+        }
+        self.inner.acquire_above(group, key, profile, floor).await
+    }
+
+    async fn request_takeover(
+        &self,
+        group: &GroupId,
+        key: &LeaseKey,
+        profile: &NodeProfile,
+    ) -> Result<TakeoverOutcome, LeaseError> {
+        self.inner.request_takeover(group, key, profile).await
+    }
+
+    async fn release(&self, lease: &Lease) -> Result<(), LeaseError> {
+        self.inner.release(lease).await
+    }
+
+    async fn holder(&self, group: &GroupId, key: &LeaseKey) -> Result<Option<Lease>, LeaseError> {
+        self.inner.holder(group, key).await
+    }
+}
+
+async fn endorsement(
+    leases: &Graced,
+    endorse: Option<&dyn crate::Endorse>,
+    group: &GroupId,
+    key: &LeaseKey,
+    node: &NodeId,
+    fence: FencingToken,
+) -> Option<Vec<u8>> {
+    let endorse = endorse?;
+    let held = leases.inner.holder(group, key).await.ok()??;
+    if &held.node != node || held.fence != fence {
+        return None;
+    }
+    endorse
+        .endorse(&held)
+        .filter(|e| e.len() <= wire::MAX_ENDORSEMENT)
 }
 
 async fn session(ctx: Arc<Ctx>, slot: PeerSlot, mut s: Box<dyn Duplex>) {
@@ -217,6 +322,12 @@ impl Ctx {
                 key,
                 profile,
             }
+            | Request::AcquireAbove {
+                group,
+                key,
+                profile,
+                ..
+            }
             | Request::Takeover {
                 group,
                 key,
@@ -225,6 +336,9 @@ impl Ctx {
                 &profile.node == node
                     && a.profile(peer, group, profile)
                     && a.lease(peer, group, key)
+            }
+            Request::Endorse { group, key, .. } => {
+                a.member(peer, group) && a.lease(peer, group, key)
             }
             Request::Release { lease } => &lease.node == node,
             Request::Holder { group, .. } | Request::Alive { group } => a.member(peer, group),
@@ -244,13 +358,34 @@ impl Ctx {
         let Ok(Ok(_slot)) = timeout(self.config.busy_wait, self.busy.acquire()).await else {
             return Reply::Refused(Refusal::Busy);
         };
-        timeout(self.config.request_timeout, self.execute(request))
+        timeout(self.config.request_timeout, self.execute(&node, request))
             .await
             .unwrap_or(Reply::Refused(Refusal::Unavailable))
     }
 
-    async fn execute(&self, request: Request) -> Reply {
+    async fn execute(&self, node: &NodeId, request: Request) -> Reply {
         let result = match request {
+            Request::AcquireAbove {
+                group,
+                key,
+                profile,
+                floor,
+            } => self
+                .leases
+                .acquire_above(&group, &key, &profile, floor)
+                .await
+                .map(Reply::Lease),
+            Request::Endorse { group, key, fence } => Ok(Reply::Endorsement(
+                endorsement(
+                    &self.leases,
+                    self.config.endorse.as_deref(),
+                    &group,
+                    &key,
+                    node,
+                    fence,
+                )
+                .await,
+            )),
             Request::Hello => Ok(Reply::Hello {
                 ttl_ms: self.config.ttl_ms.max(1),
                 max_request: wire::MAX_REQUEST as u32,

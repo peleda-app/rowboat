@@ -10,6 +10,7 @@ pub mod check;
 pub mod cursor;
 mod error;
 mod events;
+pub mod group;
 mod ids;
 pub mod request;
 #[cfg(feature = "testing")]
@@ -21,8 +22,12 @@ use bytes::Bytes;
 
 pub use error::NodeError;
 pub use events::{
-    Attention, CommandOutcome, EVENT_BUFFER, EventStream, MAX_NEW_MAIL, NewMail, NodeEvent,
-    SendOutcome,
+    Attention, CommandOutcome, EVENT_BUFFER, EventStream, GroupEvent, GroupEventStream,
+    MAX_NEW_MAIL, NewMail, NodeEvent, SendOutcome,
+};
+pub use group::{
+    AccountLeader, GroupStatus, InviteInfo, InviteKind, NodeSummary, PairingInvite, PairingResult,
+    Revoked, ServerState,
 };
 pub use ids::{
     AccountId, CommandId, DraftId, EmailAddress, MAX_ADDRESS, MailboxId, MessageId, Tag, ThreadId,
@@ -172,8 +177,88 @@ pub trait NodeApi: Send + Sync {
         address: &EmailAddress,
     ) -> Result<bool, NodeError>;
 
+    /// Makes a device invite: a QR code a new desktop or phone scans to join this node's group,
+    /// valid 10 minutes, usable once. When a device answers it, [`GroupEvent::PairingCheck`] asks
+    /// the person to compare fingerprints and [`NodeApi::confirm_pairing`] answers. Needs a node
+    /// that holds the member key ([`NodeError::Forbidden`] otherwise) and the network
+    /// ([`NodeError::PeerUnreachable`] without one).
+    async fn create_invite(&self) -> Result<PairingInvite, NodeError>;
+
+    /// Withdraws an invite this node made; [`NodeError::NotFound`] when it is not pending.
+    async fn cancel_invite(&self, invite: &str) -> Result<(), NodeError>;
+
+    /// What `code` (with `address` for a typed short code) is, without dialing anything:
+    /// [`NodeError::InvalidInput`] when it does not decode, [`NodeError::PairingExpired`] for a
+    /// QR invite whose expiry passed by this node's clock.
+    async fn inspect_invite(
+        &self,
+        code: &str,
+        address: Option<&str>,
+    ) -> Result<InviteInfo, NodeError>;
+
+    /// Pairs with a scanned QR payload, or with a typed short code and the pairing address shown
+    /// next to it. A device invite makes this node join the inviter's group (only a node with no
+    /// accounts and no other nodes may: [`NodeError::Busy`] otherwise), after which
+    /// [`PairingResult::restart_required`] is set and the data this node kept for its old group
+    /// is deleted. A server invite makes this node adopt the server into its group, granting it
+    /// every account this node's member created, after the person confirms the fingerprint.
+    ///
+    /// Failures: [`NodeError::PairingExpired`] (a QR invite past its expiry, nothing dialed),
+    /// [`NodeError::PairingCodeRejected`] (a wrong, used, withdrawn or expired code),
+    /// [`NodeError::PairingRefused`] (the other side said no), [`NodeError::PeerUnreachable`],
+    /// [`NodeError::Forbidden`] (adopting a server needs the member key).
+    async fn accept_invite(
+        &self,
+        code: &str,
+        address: Option<&str>,
+    ) -> Result<PairingResult, NodeError>;
+
+    /// Adopts a server like [`NodeApi::accept_invite`], granting it `read` and `lead` on exactly
+    /// `accounts` (at most [`group::MAX_GRANTS`], each created by this node's member, else
+    /// [`NodeError::NotFound`]) and on the group's storage. A device invite is
+    /// [`NodeError::InvalidInput`] and dials nothing.
+    async fn adopt_server(
+        &self,
+        code: &str,
+        address: Option<&str>,
+        accounts: &[AccountId],
+    ) -> Result<PairingResult, NodeError>;
+
+    /// Lets the server `server` lead `accounts` too (question 65): grants `read` and `lead` and
+    /// shares their keys. Accounts it already may lead are skipped. [`NodeError::NotFound`] for a
+    /// node that is not a counting server of this member or an account this member did not
+    /// create; [`NodeError::Forbidden`] without the member key.
+    async fn grant_to_server(&self, server: &str, accounts: &[AccountId]) -> Result<(), NodeError>;
+
+    /// The person's answer to a [`GroupEvent::PairingCheck`] that asked for confirmation:
+    /// whether both screens show the same fingerprint. [`NodeError::NotFound`] when nothing
+    /// waits for that answer.
+    async fn confirm_pairing(&self, pairing: &str, matches: bool) -> Result<(), NodeError>;
+
+    /// Every node the group ever certified, this one included, sorted by node id.
+    async fn list_nodes(&self) -> Result<Vec<NodeSummary>, NodeError>;
+
+    /// Names a node on this node only (display, never trusted; [`group::node_label`]); `None`
+    /// goes back to the label it gave when it paired. Naming this node also changes the label it
+    /// gives in later pairings. [`NodeError::NotFound`] for a node the group never certified.
+    async fn rename_node(&self, node_id: &str, label: Option<&str>) -> Result<(), NodeError>;
+
+    /// Revokes a node for good and rotates the keys of everything it could read. Refuses this
+    /// node itself ([`NodeError::InvalidInput`]); [`NodeError::NotFound`] for a node the group
+    /// never certified, [`NodeError::Forbidden`] when this node may not revoke it.
+    async fn revoke_node(&self, node_id: &str) -> Result<Revoked, NodeError>;
+
+    /// Whether the group's server answers and which node leads each account this node reads.
+    /// Asks the arbiter for each account, so it may take up to its timeout when the arbiter is
+    /// silent.
+    async fn group_status(&self) -> Result<GroupStatus, NodeError>;
+
     /// A new subscription to the node's events, buffering at most [`EVENT_BUFFER`].
     fn events(&self) -> EventStream;
+
+    /// A new subscription to the group's events (pairing checks, nodes changed, this node
+    /// revoked), buffering at most [`EVENT_BUFFER`].
+    fn group_events(&self) -> GroupEventStream;
 }
 
 #[cfg(test)]

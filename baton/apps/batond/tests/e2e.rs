@@ -374,6 +374,19 @@ async fn members_lease_revoked_and_blind_nodes_are_refused_and_batond_holds_no_k
     )
     .await;
     assert!(
+        strictly_denied(alice_m.take("vault-1--alice", NodeClass::Server).await),
+        "a member grant does not reach the member's servers"
+    );
+    w.append(
+        &laptop,
+        Op::Grant {
+            resource: r1(),
+            principal: Principal::Node(alice_m.dev.id.public()),
+            capabilities: [Capability::Read, Capability::Lead].into_iter().collect(),
+        },
+    )
+    .await;
+    assert!(
         alice_m
             .take("vault-1--alice", NodeClass::Server)
             .await
@@ -641,6 +654,7 @@ async fn a_holder_that_loses_lead_can_still_release() {
     let laptop = w.founder(laptop).await;
     let alice = Identity::generate();
     let alice_node = Device::new();
+    let alice_key = alice_node.id.public();
     for op in [
         Op::AddMember {
             member: alice.public(),
@@ -653,7 +667,7 @@ async fn a_holder_that_loses_lead_can_still_release() {
         Op::CreateResource { resource: r1() },
         Op::Grant {
             resource: r1(),
-            principal: Principal::Member(alice.public()),
+            principal: Principal::Node(alice_key),
             capabilities: [Capability::Read, Capability::Lead].into_iter().collect(),
         },
     ] {
@@ -675,7 +689,7 @@ async fn a_holder_that_loses_lead_can_still_release() {
         &laptop,
         Op::Grant {
             resource: r1(),
-            principal: Principal::Member(alice.public()),
+            principal: Principal::Node(alice_key),
             capabilities: [Capability::Read].into_iter().collect(),
         },
     )

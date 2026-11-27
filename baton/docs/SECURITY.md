@@ -16,7 +16,7 @@ Baton carries commands into resources that hold someone's mail, documents or fil
 | --- | --- | --- |
 | A member's own node, uncompromised | everything its capabilities allow | anything beyond them |
 | Another member's node | what that member was granted | private resources of others |
-| A server doing real work (Peleda's node) | what its node certificate's capabilities allow, usually `lead` and `read` on the resources it fetches | resources it has no grant for; changing the group unless it has `admin` |
+| A server doing real work (Peleda's node) | what grants naming its node allow, usually `lead` and `read` on the resources it fetches; its member's grants and role never reach it | resources it has no grant for; changing members, certificates or other nodes (it revokes only itself); granting unless a grant naming it gives `admin` |
 | A server in the blind role (`batond`) | ordering (arbiter), relaying, holding mailboxes, waking | content, keys, authority: it holds no resource key and has no capability |
 | The application's store behind `StateStore` (local disk, a bucket) | keeping what it was given | confidentiality, integrity, freshness (Baton's state is signed and sealed; rollback is detected where possible) |
 | Relays, drop service, mailboxes, wake channels, push providers | delivering bytes eventually | everything else |
@@ -52,7 +52,7 @@ Authority is recorded in the group log, not in bearer tokens. A leaseholder chec
 | `lead` | hold the lease, receive commands, use the resource's secrets | the data key and the separate **secret key** |
 | `admin` | grant and revoke on this resource, rotate its keys, delete it | nothing extra (an admin who is not a reader cannot read) |
 
-Grants name a **principal**: a member (all their certified nodes, optionally filtered by class: "Alice's desktops and servers, not her phones") or a single node (the team server). A private resource is one where only its creator holds anything. Defaults for Peleda: the creator of an account gets everything; a shared team mailbox gives `read` and the everyday command classes to each team member, `command:send` to those who may send as the box, `lead` to the team's server and, as a fallback, to its admins' desktops.
+Grants name a **principal**: a member (all their certified desktops and phones, never their servers; a further class filter, "Alice's desktops, not her phones", is still open) or a single node (the team server, which holds only grants naming it). A private resource is one where only its creator holds anything. Defaults for Peleda: the creator of an account gets everything; a shared team mailbox gives `read` and the everyday command classes to each team member, `command:send` to those who may send as the box, `lead` to the team's server and, as a fallback, to its admins' desktops.
 
 Splitting the **data key** from the **secret key** matters: a family member who reads the shared family inbox on their phone never receives its IMAP password or OAuth refresh token, because the phone has `read` but not `lead`.
 

@@ -8,10 +8,14 @@ The lease arbiter for a group that has a server node but no shared store. The se
 | --- | --- |
 | `LeaseServer::start(link, state, authorize, clock, config)` | listens on `lease`. Leases live in `lease/{key}`, heartbeats in `nodes/{node}` of `state`. `clock` is the server's own time for liveness and tokens (`baton_lease_cas::monotonic_clock()` in production). Tokens of a key only grow, across restarts over the same store too |
 | `LeaseServer::leases()`, `liveness()` | the server's own instances, for work the server process does itself |
+| `LeaseServer::endorse(lease)` | the endorsement of `lease` for the server's own process, given only when the server's record names that node with that exact token |
+| `LeaseServer::last_heartbeat(group, node)` | the server's clock time of the node's latest heartbeat, kept across restarts over the same store; for judging how long a node was silent |
+| `Endorse` (trait), `ServerConfig::endorse` | vouches for a lease in a form the server's users define (rowboat: a grant signed with the server's node key); asked only for a lease the record names with that exact token, by the node it names; at most `wire::MAX_ENDORSEMENT` (512) bytes, a longer one is never sent; never blocks |
+| `LeaseClient::endorse(group, key, fence)` | the server's endorsement of the lease this node holds with `fence`; `Ok(None)` when the server does not name this node with that token or endorses nothing |
 | `LeaseServer::stop()` | stops accepting and severs every stream; afterwards a new server can listen on the same link. Dropping the server does the same without waiting |
 | `Authorize` (trait) | asked for **every request**: `node(peer)` is the node a link-authenticated peer speaks as (default `PublicKey::node_id`; `None` refuses everything); `member(peer, group)` allows reading liveness and holders; `profile(peer, group, profile)` allows announcing a profile (default `member`; batond caps the class at the certified one); `lease(peer, group, key)` allows acquire and takeover; a release needs only that the lease's node is the peer's, so a holder that lost its right can still give the key up. It must answer from current state and never block |
 | `LeaseClient::connect(link, server, config)` | one node's connection (the node of the link's key): reads the server's time-to-live with `Hello`, keeps up to `streams` streams, every call ends within `request_timeout`, a broken reused stream is retried once on a new stream (every request is safe to repeat), replies over `max_reply` are refused before they are read |
-| `RemoteLeases::new(client)` | `Leases` through the server. A lease from `acquire` must be for the group, key and node asked, one from `holder` for the group and key asked; anything else is `RemoteError::Protocol` |
+| `RemoteLeases::new(client)` | `Leases` through the server, `acquire_above` included. A lease from `acquire` must be for the group, key and node asked, one from `holder` for the group and key asked; anything else is `RemoteError::Protocol` |
 | `RemoteLiveness::new(client)` | `Liveness` observed by the server. The `now` arguments are ignored: the server's clock decides. `heartbeat` is `Ok` only once the server recorded it |
 | `RemoteLiveness::valid_until(group, margin)`, `holding(group, margin)` | the holder's self-expiry: start of the last confirmed heartbeat in the group plus the time-to-live the server stated in that confirmation (`Beat`) minus `margin`, so a server restarted with a shorter time-to-live shortens it at the next heartbeat; `LeaseClient::ttl_ms` follows the latest stated one. A holder stops acting on that group's leases once it passes; failed heartbeats extend nothing |
 | `RemoteError` | inside `LeaseError::Backend`: `Denied` (refused by the server), `Server` (its store failed), `TooLarge`, `Protocol` (a reply that does not fit the request). Unreachable, busy and undecided all map to `LeaseError::Unavailable`, a corrupted record to `LeaseError::Corrupted` |
@@ -25,7 +29,7 @@ What a holder relies on: the server first observes a heartbeat no earlier than t
 
 ## Wire
 
-Every frame is `u32` big-endian length ‖ body; every body is `[1] ‖ postcard(value)` with no trailing bytes and every id checked while decoding. Requests: `Hello`, `Acquire`, `Takeover`, `Release`, `Holder`, `Heartbeat`, `Alive`. Replies: `Hello { ttl_ms, max_request, max_reply }`, `Lease`, `Takeover`, `Done` (release), `Alive`, `Refused(Denied | Unavailable | Corrupted | Backend | Busy | TooLarge | Version)`, `Beat { ttl_ms }` (heartbeat, stating the time-to-live the holder must stop by). Refusals carry no backend detail. Frames are not signed: the link authenticates the peer by its key on every stream (QUIC with TLS keyed by node identities in `link-iroh`), and the server checks every request against that peer, as `baton-fetch` does.
+Every frame is `u32` big-endian length ‖ body; every body is `[1] ‖ postcard(value)` with no trailing bytes and every id checked while decoding. Requests: `Hello`, `Acquire`, `Takeover`, `Release`, `Holder`, `Heartbeat`, `Alive`, `AcquireAbove { floor }`, `Endorse { group, key, fence }`. Replies: `Hello { ttl_ms, max_request, max_reply }`, `Lease`, `Takeover`, `Done` (release), `Alive`, `Refused(Denied | Unavailable | Corrupted | Backend | Busy | TooLarge | Version)`, `Beat { ttl_ms }` (heartbeat, stating the time-to-live the holder must stop by), `Endorsement(Option<bytes>)` (at most 512 bytes; a longer one does not decode). `Endorse` is allowed to a peer that is a member and may lease the key; the answer is `None` unless the record names the peer's node with that token. Refusals carry no backend detail. Frames are not signed: the link authenticates the peer by its key on every stream (QUIC with TLS keyed by node identities in `link-iroh`), and the server checks every request against that peer, as `baton-fetch` does.
 
 A request that names a node (`Acquire`, `Takeover`, `Heartbeat` by the profile, `Release` by the lease) is refused unless that node is `Authorize::node(peer)`.
 
@@ -35,6 +39,7 @@ A request that names a node (`Acquire`, `Takeover`, `Heartbeat` by the profile, 
 | --- | --- | --- |
 | `ttl_ms` | 15,000 | liveness time-to-live on the server's clock, stated in `Hello` and every `Beat` |
 | `previous_ttl_ms` | 0 | the largest time-to-live an earlier run stated that a holder may still believe; holders are judged gone only after `max(ttl_ms, previous_ttl_ms)` (batond keeps it in `lease.ttl`) |
+| `grace_ms` | 0 | for this long after start only the holder a key's record names may acquire it (renewals); set it to the time-to-live where the server may have just become a group's arbiter, so a node still acting on another arbiter's lease has stopped first |
 | `idle_timeout` | 60 s | a stream with no request for this long is closed |
 | `header_timeout` | 2 s | the rest of a request after its first byte |
 | `write_timeout` | 5 s | the peer must read the reply within this |
@@ -74,6 +79,7 @@ Request bodies are at most 1 KiB (`wire::MAX_REQUEST`; the largest real request 
 - the server down (every call `Unavailable`, the holder's `valid_until` not extended and passing, resumption after restart);
 - a restart with a shorter time-to-live: the arbiter does not hand the key to another node before the old time-to-live of silence, and the holder's next heartbeat learns the shorter one;
 - a holder that lost the right to a key still releasing it;
+- the floor suite through the server; endorsements only for the holder with its exact token (another token, another node, a forged lease in process, an oversized endorsement and a peer denied the key all get none), none without an endorser; the last heartbeat on the server's clock;
 - a reply over the limit; a lying server (wrong key, wrong node, wrong reply kind, oversized and garbage replies);
 - wire round trips, bounds, proptests over arbitrary bodies, bit flips and truncations.
 

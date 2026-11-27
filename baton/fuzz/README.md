@@ -6,7 +6,7 @@ Fuzz targets for every decoder of untrusted bytes, on the pinned nightly in `rus
 | --- | --- |
 | `lease_record` | `LeaseRecord::decode` (records read from a store): never panics; whatever decodes re-encodes to an equal valid record; a held record has a token above zero |
 | `roster` | `Roster::from_bytes`: only verified rosters come back (non-empty, signer is a member, no revoked member) |
-| `pairing` | `Invite::from_bytes`, `JoinRequest::from_bytes`: never panic |
+| `pairing` | CPace peer messages and key confirmation tags (`Pake::finish`, `PakeSession::check_confirmation`): never panic, invalid points refused |
 | `seal_open` | `baton_seal::open` on arbitrary bytes never succeeds and never panics |
 | `store_records` | arbitrary bytes as a heartbeat record and a lease record in the store, then `CasLiveness::alive` at extreme observer times and `CasLeases::acquire`/`holder`: never panics; a granted token is above zero |
 | `frame` | `baton_mesh::frame::Opener::open` on arbitrary bytes, with and without an expected sender: never panics; only a member's genuine frame could open |
@@ -17,6 +17,7 @@ Fuzz targets for every decoder of untrusted bytes, on the pinned nightly in `rus
 | `group_frame` | `baton_group_server::wire::decode_request`, `decode_reply` and `frame_len` (what a group server such as `batond` reads from any trusted peer and a member reads from the server), and every pushed entry that decodes through `GroupLogs::push` on a log with a genesis: never panic; whatever decodes re-encodes to an equal value; the head never goes back |
 | `command` | `Command::decode` and `CommandResult::decode`: never panic; decoded values re-encode identically |
 | `keys_box` | `KemPublic::from_bytes` and `open_box` on boxes cut from arbitrary bytes: never panic; forged boxes never open; short plaintexts sealed to a key open back only with the same associated data |
+| `fetch_request` | `baton_fetch::fuzz_decoders`: a serving node's request header (length, then the versioned request with its locator) and a fetching node's reply header: never panic; an accepted reply length is within `max_object` |
 | `names` | `RecordName` and `NodeId` construction and deserialization: no path traversal ever passes |
 
 Every crash becomes a regression test next to the code and a corpus entry here before it is fixed.

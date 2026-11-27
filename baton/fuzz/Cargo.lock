@@ -107,12 +107,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "baton-fetch"
+version = "0.0.0"
+dependencies = [
+ "async-trait",
+ "baton-core",
+ "baton-identity",
+ "baton-link",
+ "blake3",
+ "bytes",
+ "futures",
+ "postcard",
+ "serde",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
 name = "baton-fuzz"
 version = "0.0.0"
 dependencies = [
  "baton-command",
  "baton-core",
  "baton-drop",
+ "baton-fetch",
  "baton-group",
  "baton-group-server",
  "baton-identity",
@@ -170,6 +188,7 @@ name = "baton-identity"
 version = "0.0.0"
 dependencies = [
  "baton-core",
+ "curve25519-dalek 5.0.0",
  "data-encoding",
  "ed25519-dalek",
  "hmac",
@@ -177,6 +196,7 @@ dependencies = [
  "rand_core 0.6.4",
  "serde",
  "sha2 0.11.1",
+ "subtle",
  "thiserror",
  "zeroize",
 ]

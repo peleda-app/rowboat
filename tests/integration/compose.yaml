@@ -34,3 +34,41 @@ services:
       - '127.0.0.1:49393:993'
       - '127.0.0.1:49365:465'
       - '127.0.0.1:49387:587'
+
+  # GreenMail on the same ports inside the compose network and on the host, reachable as
+  # mail.localhost from both, so an account a desktop on the host adds works unchanged for the
+  # server container that takes it over.
+  greenmail-shared:
+    image: greenmail/standalone:2.1.14
+    entrypoint: ['/bin/sh', '/node-seed/greenmail.sh']
+    environment:
+      GREENMAIL_OPTS: '-Dgreenmail.imaps.hostname=0.0.0.0 -Dgreenmail.imaps.port=49493 -Dgreenmail.smtps.hostname=0.0.0.0 -Dgreenmail.smtps.port=49465 -Dgreenmail.api.hostname=0.0.0.0 -Dgreenmail.api.port=8080 -Dgreenmail.tls.keystore.file=/tmp/it.p12 -Dgreenmail.tls.keystore.password=it-keystore -Dgreenmail.verbose=false'
+    volumes:
+      - ../../../tests/integration/.certs:/certs:ro
+      - ../../../tests/integration/seed/greenmail:/node-seed:ro
+    networks:
+      default:
+        aliases: [mail.localhost]
+    ports:
+      - '127.0.0.1:49493:49493'
+      - '127.0.0.1:49465:49465'
+      - '127.0.0.1:49481:8080'
+
+  # The headless server (apps/rowboat), built with the test-roots feature.
+  rowboat:
+    build:
+      context: ../../../..
+      dockerfile: rowboat/apps/rowboat/Dockerfile
+      args:
+        FEATURES: test-roots
+    depends_on: [greenmail-shared]
+    volumes:
+      - ../../../tests/integration/.certs/ca.crt:/certs/ca.crt:ro
+      - ../../../tests/integration/seed/rowboat/rowboat.toml:/etc/rowboat/rowboat.toml:ro
+    tmpfs:
+      - /data:uid=10001,gid=10001,mode=0700
+      - /secrets:uid=10001,gid=10001,mode=0700
+      - /cache:uid=10001,gid=10001,mode=0700
+    ports:
+      - '127.0.0.1:49480:8080'
+      - '127.0.0.1:49400-49409:49400-49409/udp'

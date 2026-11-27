@@ -58,7 +58,8 @@ pub enum OpenError {
 ///   shared: a write checks the current version and replaces the file while holding its key's
 ///   stripe lock, in-process and on a lock file under `<root>/.locks`. Reads take no lock: a file
 ///   is only ever replaced whole by rename, so a read sees the old or the new value, never a mix.
-/// - At most one owner handle per directory at a time ([`FsObjects::open`]).
+/// - At most one owner handle per directory at a time ([`FsObjects::open`]), until it is dropped
+///   or [`FsObjects::close`]d.
 /// - Symbolic links inside the root are never followed: reads and writes through them fail and
 ///   `list` skips them.
 pub struct FsObjects {
@@ -68,7 +69,8 @@ pub struct FsObjects {
 struct Inner {
     root: PathBuf,
     stripes: Box<[Mutex<()>]>,
-    _owner: Option<File>,
+    owner: std::sync::Mutex<Option<File>>,
+    closed: Arc<tokio::sync::RwLock<bool>>,
 }
 
 impl FsObjects {
@@ -105,7 +107,8 @@ impl FsObjects {
             inner: Arc::new(Inner {
                 root,
                 stripes,
-                _owner: owner,
+                owner: std::sync::Mutex::new(owner),
+                closed: Arc::default(),
             }),
         })
     }
@@ -119,14 +122,37 @@ impl FsObjects {
         &self.inner.stripes[stripe_of(key)]
     }
 
+    /// Waits for every operation in progress, including ones whose caller was cancelled, then
+    /// refuses every later one with [`StorageError::Backend`] and releases the owner lock, so the
+    /// directory can be opened again while this handle and its clones still exist. Calling it
+    /// again does nothing.
+    pub async fn close(&self) {
+        let mut closed = self.inner.closed.write().await;
+        *closed = true;
+        self.inner
+            .owner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take();
+    }
+
     async fn blocking<T: Send + 'static>(
         &self,
         f: impl FnOnce(&Inner) -> Result<T, StorageError> + Send + 'static,
     ) -> Result<T, StorageError> {
+        let open = self.inner.closed.clone().read_owned().await;
+        if *open {
+            return Err(StorageError::backend(io::Error::other(
+                "the store is closed",
+            )));
+        }
         let inner = self.inner.clone();
-        tokio::task::spawn_blocking(move || f(&inner))
-            .await
-            .map_err(StorageError::backend)?
+        tokio::task::spawn_blocking(move || {
+            let _open = open;
+            f(&inner)
+        })
+        .await
+        .map_err(StorageError::backend)?
     }
 }
 
@@ -600,6 +626,43 @@ mod tests {
 
     fn key(text: &str) -> ObjectKey {
         ObjectKey::parse(text).unwrap()
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn closing_frees_the_directory_and_refuses_later_writes() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(FsObjects::open(dir.path()).unwrap());
+        let k = key("t/a");
+        store
+            .put(&k, Bytes::from_static(b"one"), Expect::Any)
+            .await
+            .unwrap();
+        let busy = {
+            let store = store.clone();
+            tokio::spawn(async move {
+                for i in 0..200u32 {
+                    let _ = store
+                        .put(&key(&format!("t/k{i}")), Bytes::new(), Expect::Any)
+                        .await;
+                }
+            })
+        };
+        store.close().await;
+        let next = FsObjects::open(dir.path()).unwrap();
+        assert!(
+            store
+                .put(&k, Bytes::from_static(b"two"), Expect::Any)
+                .await
+                .is_err()
+        );
+        assert!(store.get(&k).await.is_err());
+        busy.await.unwrap();
+        assert_eq!(&next.get(&k).await.unwrap().unwrap().0[..], b"one");
+        store.close().await;
+        assert!(matches!(
+            FsObjects::open(dir.path()),
+            Err(OpenError::Locked { .. })
+        ));
     }
 
     #[tokio::test]

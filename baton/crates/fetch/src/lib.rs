@@ -23,7 +23,10 @@ use tokio::task::JoinHandle;
 /// The link protocol objects travel on.
 pub const PROTOCOL: &str = "fetch";
 
-const MAX_REQUEST: usize = 512;
+const MAX_REQUEST: usize = 1024;
+/// The longest locator a request may carry, in bytes.
+pub const MAX_LOCATOR: usize = 256;
+const VERSION: u8 = 2;
 const FOUND: u8 = 1;
 const NOT_HERE: u8 = 0;
 
@@ -75,7 +78,12 @@ pub trait LocalObjects: Send + Sync {
     /// The object, if held here **for `resource`**. An implementation must return `None` for an
     /// object that belongs only to another resource, even when a content-addressed store holds it,
     /// so a reader of one resource can neither fetch nor probe another's objects.
-    async fn get(&self, resource: &ResourceId, id: &ContentId) -> Option<Bytes>;
+    ///
+    /// `locator` is what the requester added to help find the object where content ids are not
+    /// the storage key (at most [`MAX_LOCATOR`] bytes, empty when none). It comes from the peer
+    /// and is untrusted: it may only narrow where to look, never change what is served, and the
+    /// requester checks the bytes against `id` whatever the locator said.
+    async fn get(&self, resource: &ResourceId, id: &ContentId, locator: &[u8]) -> Option<Bytes>;
 }
 
 /// Decides whether `peer` may read `resource` (normally: its node holds `Read` in the group log).
@@ -86,6 +94,39 @@ struct Request {
     v: u8,
     resource: ResourceId,
     id: ContentId,
+    locator: Vec<u8>,
+}
+
+fn decode_request(raw: &[u8]) -> Option<Request> {
+    if raw.len() > MAX_REQUEST {
+        return None;
+    }
+    postcard::from_bytes::<Request>(raw).ok()
+}
+
+fn reply_len(header: &[u8], max: u64) -> Option<u64> {
+    let (&tag, rest) = header.split_first()?;
+    if tag != FOUND {
+        return None;
+    }
+    let len = u64::from_be_bytes(rest.get(..8)?.try_into().ok()?);
+    (len <= max).then_some(len)
+}
+
+/// Runs the decoders of untrusted fetch bytes over `bytes`, for the fuzz target: a serving node's
+/// request header (a 2-byte length, then the request) and a fetching node's reply header. Never
+/// panics.
+pub fn fuzz_decoders(bytes: &[u8]) {
+    let _ = decode_request(bytes);
+    if let Some((len, rest)) = bytes.split_first_chunk::<2>() {
+        let len = u16::from_be_bytes(*len) as usize;
+        if let Some(req) = rest.get(..len).and_then(decode_request) {
+            let _ = (req.v == VERSION, req.locator.len() <= MAX_LOCATOR);
+        }
+    }
+    if let Some(len) = reply_len(bytes, FetchConfig::default().max_object) {
+        assert!(len <= FetchConfig::default().max_object);
+    }
 }
 
 /// Limits of serving and fetching.
@@ -93,8 +134,12 @@ struct Request {
 pub struct FetchConfig {
     /// The largest object served or accepted, in bytes.
     pub max_object: u64,
-    /// How long one peer may take to answer, from opening the stream to the last byte.
+    /// How long one peer may take to answer, from opening the stream to the last byte, plus the
+    /// object's size at [`FetchConfig::min_rate`].
     pub peer_timeout: Duration,
+    /// The slowest transfer accepted, in bytes per second: an object of `n` bytes gets
+    /// `n / min_rate` seconds on top of `peer_timeout`, on both sides. 0 adds nothing.
+    pub min_rate: u64,
     /// How long a requester may take to send its request before the stream is dropped.
     pub header_timeout: Duration,
     /// How long the application's source may take.
@@ -111,11 +156,21 @@ pub struct FetchConfig {
     pub liar_ttl: Duration,
 }
 
+impl FetchConfig {
+    fn transfer(&self, len: u64) -> Duration {
+        match self.min_rate {
+            0 => Duration::ZERO,
+            rate => Duration::from_millis(len.saturating_mul(1000) / rate),
+        }
+    }
+}
+
 impl Default for FetchConfig {
     fn default() -> Self {
         Self {
             max_object: 64 * 1024 * 1024,
             peer_timeout: Duration::from_millis(1500),
+            min_rate: 0,
             header_timeout: Duration::from_millis(500),
             source_timeout: Duration::from_secs(10),
             parallel: 2,
@@ -135,7 +190,8 @@ impl Default for FetchConfig {
 /// Resources a peer can make this node spend are bounded: the request must arrive within
 /// `header_timeout` and before any shared slot is taken; one peer may have `max_per_peer` requests
 /// open; `max_serving` requests are served at once; objects in memory never exceed
-/// `serving_budget` bytes; every request ends within `peer_timeout`.
+/// `serving_budget` bytes; every request ends within `peer_timeout` plus the object's size at
+/// `min_rate`.
 pub async fn serve(
     link: Arc<dyn Link>,
     objects: Arc<dyn LocalObjects>,
@@ -170,37 +226,52 @@ pub async fn serve(
                     }
                     let mut raw = vec![0u8; len];
                     s.read_exact(&mut raw).await.ok()?;
-                    postcard::from_bytes::<Request>(&raw).ok()
+                    decode_request(&raw)
                 };
                 let req = tokio::time::timeout(config.header_timeout, header)
                     .await
                     .ok()
                     .flatten();
+                let deadline = tokio::time::Instant::now() + config.peer_timeout;
                 let serve_one = async {
                     let req = req?;
-                    let allowed = req.v == 1 && authorize(&peer, &req.resource);
-                    let _slot = slots.acquire().await.ok()?;
-                    let found = if allowed {
-                        objects.get(&req.resource, &req.id).await
-                    } else {
-                        None
-                    };
+                    let allowed = req.v == VERSION
+                        && req.locator.len() <= MAX_LOCATOR
+                        && authorize(&peer, &req.resource);
+                    let found = tokio::time::timeout_at(deadline, async {
+                        let slot = slots.acquire().await.ok()?;
+                        let found = if allowed {
+                            objects.get(&req.resource, &req.id, &req.locator).await
+                        } else {
+                            None
+                        };
+                        Some((slot, found))
+                    })
+                    .await
+                    .ok()
+                    .flatten();
+                    let (_slot, found) = found?;
                     let found = found.filter(|b| b.len() as u64 <= config.max_object);
                     let _bytes = match &found {
                         Some(b) => Some(budget.try_acquire_many(kib(b.len() as u64).max(1)).ok()?),
                         None => None,
                     };
-                    match found {
-                        Some(b) => {
-                            s.write_u8(FOUND).await.ok()?;
-                            s.write_u64(b.len() as u64).await.ok()?;
-                            s.write_all(&b).await.ok()?;
+                    let until =
+                        deadline + config.transfer(found.as_ref().map_or(0, |b| b.len() as u64));
+                    let send = async {
+                        match found {
+                            Some(b) => {
+                                s.write_u8(FOUND).await.ok()?;
+                                s.write_u64(b.len() as u64).await.ok()?;
+                                s.write_all(&b).await.ok()?;
+                            }
+                            None => s.write_u8(NOT_HERE).await.ok()?,
                         }
-                        None => s.write_u8(NOT_HERE).await.ok()?,
-                    }
-                    s.shutdown().await.ok()
+                        s.shutdown().await.ok()
+                    };
+                    tokio::time::timeout_at(until, send).await.ok().flatten()
                 };
-                let _ = tokio::time::timeout(config.peer_timeout, serve_one).await;
+                let _ = serve_one.await;
                 let mut open = per_peer.lock().expect("per-peer lock");
                 if let Some(n) = open.get_mut(&peer) {
                     *n -= 1;
@@ -254,31 +325,45 @@ impl Fetcher {
             .collect()
     }
 
-    async fn ask(&self, peer: PublicKey, resource: &ResourceId, id: &ContentId) -> Option<Bytes> {
+    async fn ask(
+        &self,
+        peer: PublicKey,
+        resource: &ResourceId,
+        id: &ContentId,
+        locator: &[u8],
+    ) -> Option<Bytes> {
         let protocol = Protocol::new(PROTOCOL).expect("valid protocol name");
         let max = self.config.max_object;
-        let work = async {
+        let deadline = tokio::time::Instant::now() + self.config.peer_timeout;
+        let head = async {
             let mut s = self.link.open(&peer, &protocol).await.ok()?;
             let req = postcard::to_stdvec(&Request {
-                v: 1,
+                v: VERSION,
                 resource: resource.clone(),
                 id: *id,
+                locator: locator.to_vec(),
             })
             .ok()?;
             s.write_u16(req.len() as u16).await.ok()?;
             s.write_all(&req).await.ok()?;
-            if s.read_u8().await.ok()? != FOUND {
+            let mut header = [0u8; 9];
+            s.read_exact(&mut header[..1]).await.ok()?;
+            if header[0] != FOUND {
                 return None;
             }
-            let len = s.read_u64().await.ok()?;
-            if len > max {
-                return None;
-            }
+            s.read_exact(&mut header[1..]).await.ok()?;
+            reply_len(&header, max).map(|len| (s, len))
+        };
+        let (mut s, len) = tokio::time::timeout_at(deadline, head)
+            .await
+            .ok()
+            .flatten()?;
+        let body = async {
             let mut buf = Vec::with_capacity(usize::try_from(len.min(1024 * 1024)).ok()?);
             let read = (&mut s).take(len).read_to_end(&mut buf).await.ok()?;
             (read as u64 == len).then(|| Bytes::from(buf))
         };
-        let bytes = tokio::time::timeout(self.config.peer_timeout, work)
+        let bytes = tokio::time::timeout_at(deadline + self.config.transfer(len), body)
             .await
             .ok()
             .flatten()?;
@@ -302,6 +387,22 @@ impl Fetcher {
         id: &ContentId,
         peers: &[PublicKey],
     ) -> Result<(Bytes, Origin), FetchError> {
+        self.fetch_located(resource, id, &[], peers).await
+    }
+
+    /// [`Fetcher::fetch`] with a `locator` the serving peers' [`LocalObjects`] get to find the
+    /// object (at most [`MAX_LOCATOR`] bytes, else [`FetchError::NotFound`] without asking
+    /// anyone). The answer is checked against `id` as always.
+    pub async fn fetch_located(
+        &self,
+        resource: &ResourceId,
+        id: &ContentId,
+        locator: &[u8],
+        peers: &[PublicKey],
+    ) -> Result<(Bytes, Origin), FetchError> {
+        if locator.len() > MAX_LOCATOR {
+            return Err(FetchError::NotFound);
+        }
         let local = self.link.local();
         let liars = self.liars(resource);
         let mut seen = HashSet::new();
@@ -313,7 +414,7 @@ impl Fetcher {
         for batch in candidates.chunks(self.config.parallel.max(1)) {
             let mut asks: futures::stream::FuturesUnordered<_> = batch
                 .iter()
-                .map(|p| async move { (*p, self.ask(*p, resource, id).await) })
+                .map(|p| async move { (*p, self.ask(*p, resource, id, locator).await) })
                 .collect();
             while let Some((peer, got)) = asks.next().await {
                 if let Some(bytes) = got {

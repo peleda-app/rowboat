@@ -395,7 +395,12 @@ struct Objects(std::collections::HashMap<baton_fetch::ContentId, Bytes>);
 
 #[async_trait::async_trait]
 impl baton_fetch::LocalObjects for Objects {
-    async fn get(&self, _: &baton_core::ResourceId, id: &baton_fetch::ContentId) -> Option<Bytes> {
+    async fn get(
+        &self,
+        _: &baton_core::ResourceId,
+        id: &baton_fetch::ContentId,
+        _: &[u8],
+    ) -> Option<Bytes> {
         self.0.get(id).cloned()
     }
 }

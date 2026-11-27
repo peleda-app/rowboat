@@ -239,9 +239,9 @@ async fn shutdown_lets_a_long_poll_finish() {
         tokio::spawn(async move { mb.take(&id, &reader, None, 1, Duration::from_secs(2)).await })
     };
     tokio::time::sleep(Duration::from_millis(200)).await;
-    let started = Instant::now();
-    running.stop().await;
-    assert!(started.elapsed() < Duration::from_secs(10));
+    tokio::time::timeout(Duration::from_secs(30), running.stop())
+        .await
+        .expect("stop ends once the poll in flight is answered");
     assert!(
         poll.await.unwrap().unwrap().is_empty(),
         "the poll in flight got its answer"

@@ -7,6 +7,7 @@ use rowboat_node::records::{
 };
 
 fuzz_target!(|data: &[u8]| {
+    rowboat_node::fuzz_leaving(data);
     if let Ok(r) = decode_node_record(data) {
         assert_eq!(decode_node_record(&encode_node_record(&r)).unwrap(), r);
     }

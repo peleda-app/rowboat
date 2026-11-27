@@ -1022,7 +1022,7 @@ async fn a_stronger_node_asking_for_the_account_gets_it_at_the_next_run() {
     let config = AccountConfig::new(tenant(), acc.clone());
     let group = coordination::group(&tenant());
     let key = coordination::lease_key(&acc);
-    for p in [desktop.profile().clone(), profile("srv")] {
+    for p in [desktop.profile(), profile("srv")] {
         liveness.heartbeat(&group, &p, clock.now()).await.unwrap();
     }
     desktop.sync_account(&config, &fake).await.unwrap();

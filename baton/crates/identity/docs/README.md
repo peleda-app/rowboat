@@ -1,6 +1,6 @@
 # baton-identity
 
-Who belongs to a person's mesh. Every node has an Ed25519 identity, and its `NodeId` is derived from the public key. The group's members are listed in a signed roster whose epoch only grows; pairing a device or revoking one produces the next roster, signed by a current member. New devices join with a one-time invite.
+Who belongs to a person's mesh. Every node has an Ed25519 identity, and its `NodeId` is derived from the public key. The group's members are listed in a signed roster whose epoch only grows; pairing a device or revoking one produces the next roster, signed by a current member. Pairing runs over CPace, a PAKE that lets two devices agree on a key from a short secret without exposing it to offline guessing.
 
 ## API
 
@@ -13,22 +13,23 @@ Who belongs to a person's mesh. Every node has an Ed25519 identity, and its `Nod
   - `verify_successor(next)`: `next` verifies, has the same group, a higher epoch, is signed by a member of this roster that is not revoked, and keeps every revoked key revoked. Epochs may be skipped, so a node that was offline catches up in one step.
   - `quorum()`: the smallest majority of members.
 - `RosterHandle`: the roster a node trusts, shared by its transport and its ownership. It only moves to a valid successor, so its epoch only grows; receiving the same roster again is a no-op.
-- `Inviter`, `Invite`, `JoinRequest`: pairing, below.
+- `Pake`, `PakeRole`, `PakeSession`: CPace for pairing, below.
 
-## Pairing
+## Pairing: CPace
 
-1. A member calls `Inviter::invite`, which draws a random 128-bit secret and a public invite id and keeps them in memory until the expiry (minutes). The `Invite` (group, inviter key, id, secret, expiry) is shown as a QR code.
-2. The new device creates its identity and answers with `JoinRequest::new(invite, identity)`: its public key, an HMAC-SHA256 keyed by the secret over the group, the inviter key, the invite id and the device key, and the device's signature over all of it.
-3. The member calls `Inviter::accept`: the invite must be pending and unexpired (any attempt naming it uses it up), the HMAC and the signature must verify, and the device must not be revoked. It returns the next roster with the device added, signed by the member.
-4. The device checks that roster with `Invite::verify_roster` (signed by the inviter named in the invite, same group, lists the device) and trusts it as its first roster.
+`Pake` is CPace (`draft-irtf-cfrg-cpace`) over ristretto255 with SHA-512 (`curve25519-dalek`), in initiator-responder order:
+
+1. Each side calls `Pake::start(role, password, channel, sid, ad)`: the generator is derived from `lv_cat(DSI, password, zero padding, channel, sid)` hashed to the group, the scalar comes from the operating system (`start_seeded` takes 64 bytes for test vectors), and `message()` is the 32-byte point to send.
+2. `finish(peer_message, peer_ad)` refuses a non-canonical encoding, the identity and a shared point at the identity (`InvalidKey`), and derives the intermediate session key `ISK = SHA-512(lv_cat(DSI_ISK, sid, K) || lv_cat(Ya, ADa) || lv_cat(Yb, ADb))`.
+3. Key confirmation, which CPace leaves to the application: each side sends `confirmation()` (HMAC-SHA512 of the ISK under `baton-pake-confirm-v1` and its role) and checks the peer's with `check_confirmation`, in constant time (`BadProof` on any mismatch). Only then is `derive(label)` used for further keys.
+
+The application binds the channel (both endpoint keys) and the session (the invite) into `channel` and `sid`; rowboat's pairing protocol (`crates/group`) is the consumer. The HMAC invite that preceded it was removed when CPace landed (GROUP.md, B1).
 
 ## Threat model and limits
 
-- **The invite is a bearer secret.** Anyone who reads it before it expires and before the real device uses it can join instead. It must travel over a channel the person trusts: a QR code scanned in person, never a message through a server. A device that joins by mistake is removed by revocation.
-- **No PAKE yet.** Because the proof is an HMAC, an eavesdropper who sees a join request can test guesses of the secret offline. With a 128-bit secret that is hopeless; a short code that a person types (6–8 digits) would be broken at once. Short codes need a PAKE (SPAKE2 or CPace) first.
-- **The join channel needs no secrecy.** A network attacker without the secret cannot forge a request, cannot swap the device key in a request (the HMAC covers it) and cannot forge the roster reply (it is signed by the inviter whose key the device read from the QR code).
-- **Trust starts out of band.** The genesis roster is trusted because it was made on the person's own device; a joining device trusts the inviter named in the QR code.
+- **One guess per run.** An eavesdropper who records a whole run cannot test guesses offline; an active attacker learns whether one guess was right per run. Limiting runs (attempts per invite) is the application's job.
+- **Not yet checked against the draft's test vectors.** The construction follows the draft; adding its published vectors is open (rowboat `docs/QUESTIONS.md`, 45).
+- **Trust starts out of band.** The genesis roster is trusted because it was made on the person's own device; a joining device trusts what the PAKE-authenticated peer sends only after the person confirmed the fingerprint.
 - **Revocation needs the new roster to spread.** A revoked device stays a member for every node that has not yet seen the roster that revoked it, and it can sign successors of the older roster for those nodes (a fork). Nodes should fetch the latest roster from several peers on reconnect; detecting forks (two different rosters with one epoch) is future work.
 - **Revocation does not rotate the group key here.** Rotating the group key on revocation, as SECURITY.md requires, belongs to `baton-keys` (phase 4).
-- Pending invites live in memory; restarting the member cancels them.
-- Nothing in this crate logs, and `Debug` of `Identity` and `Invite` hides the secrets.
+- Nothing in this crate logs, and `Debug` of `Identity`, `Pake` and `PakeSession` hides the secrets; the scalar and the ISK are zeroized on drop.

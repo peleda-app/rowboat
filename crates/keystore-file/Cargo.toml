@@ -1,0 +1,28 @@
+[package]
+name = "rowboat-keystore-file"
+description = "Device secret store in files of mode 0600, for the headless server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+readme = "docs/README.md"
+
+[package.metadata.dojo]
+kind = "implementation"
+implements = "rowboat-keystore"
+
+[dependencies]
+rowboat-keystore.workspace = true
+async-trait.workspace = true
+getrandom.workspace = true
+tokio = { workspace = true, features = ["rt"] }
+
+[dev-dependencies]
+rowboat-keystore = { workspace = true, features = ["testing"] }
+tempfile.workspace = true
+tokio.workspace = true
+
+[lints]
+workspace = true

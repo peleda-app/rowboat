@@ -656,6 +656,7 @@ mod tests {
             account in "[a-z]{1,8}",
             context in "[a-z/\\x00]{0,16}",
         ) {
+            prop_assume!(AccountId::new(account.clone()).is_ok());
             let tenant_aad = LocalKeyring::aad(&KeyScope::Tenant(t("t")), &context);
             let account_aad =
                 LocalKeyring::aad(&KeyScope::account_of(&t("t"), &a(&account)), &context);

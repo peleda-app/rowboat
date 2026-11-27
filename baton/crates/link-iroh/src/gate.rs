@@ -40,7 +40,7 @@ impl Gate {
     }
 
     fn allows(&self, id: &iroh::EndpointId) -> bool {
-        to_baton(id).is_ok_and(|k| self.trust.allows(&k))
+        to_baton(id).is_ok_and(|k| self.trust.reachable(&k))
     }
 }
 

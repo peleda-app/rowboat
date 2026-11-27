@@ -157,3 +157,45 @@ pub enum NodeEvent {
 
 /// A subscription to the node's events: bounded, never holds the node up.
 pub type EventStream = Pin<Box<dyn Stream<Item = NodeEvent> + Send>>;
+
+/// Something changed in the node's group. Kept apart from [`NodeEvent`] so apps that match node
+/// events exhaustively keep compiling; ids, kinds and the fingerprint only.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum GroupEvent {
+    /// A pairing reached the fingerprint: show it. When `confirm` is set the person must compare
+    /// it with the other screen and answer with `confirm_pairing`.
+    PairingCheck {
+        /// The pairing, for `confirm_pairing`.
+        pairing: String,
+        /// Six digits in two groups.
+        fingerprint: String,
+        /// The other node.
+        node: String,
+        /// The class of the node being added (`server`, `desktop`, `phone`).
+        class: String,
+        /// Whether the person must answer.
+        confirm: bool,
+    },
+    /// A node joined, was revoked or renewed: reload the list of nodes.
+    NodesChanged,
+    /// This node was revoked: the app runs its "lost or stolen" path.
+    NodeRevoked,
+    /// Which node leads an account, or whether the server answers, may have changed: reload
+    /// [`crate::NodeApi::group_status`].
+    LeadersChanged,
+    /// The journal of an account this node follows forked: two valid heads of its owner
+    /// disagree. The node stopped following it; ids only.
+    JournalForked {
+        /// The account.
+        account: AccountId,
+    },
+    /// The subscriber fell behind and missed events; reload the list of nodes.
+    Lagged {
+        /// How many were missed.
+        missed: u64,
+    },
+}
+
+/// A subscription to the group's events, bounded like [`EventStream`].
+pub type GroupEventStream = Pin<Box<dyn Stream<Item = GroupEvent> + Send>>;

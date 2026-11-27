@@ -926,3 +926,51 @@ async fn a_run_whose_heartbeats_lapsed_never_reaches_the_provider_after_they_rec
         Err(crate::EngineError::NotOwner)
     ));
 }
+
+#[tokio::test]
+async fn a_presumed_start_reports_a_queued_send_uncertain_and_never_sends_it() {
+    let sender = FakeSender::new();
+    let (engine, storage) = build(Some(sender.clone()), fast());
+    let id = queue_send(&storage, None, None).await;
+    let flags = Command {
+        id: CommandId::generate(),
+        account: acc(),
+        created_at: Timestamp::now(),
+        trace: None,
+        body: CommandBody::SetFlags {
+            mailbox: "INBOX".into(),
+            items: vec![],
+            add: Default::default(),
+            remove: Default::default(),
+        },
+    };
+    storage.commands.submit(&tenant(), &flags).await.unwrap();
+    assert_eq!(
+        crate::presume_started(&storage, &tenant(), &acc())
+            .await
+            .unwrap(),
+        1,
+        "only the command that cannot be repeated"
+    );
+    assert_eq!(
+        crate::presume_started(&storage, &tenant(), &acc())
+            .await
+            .unwrap(),
+        0,
+        "idempotent"
+    );
+    engine
+        .run_commands(&config(), &FakeMail::new())
+        .await
+        .unwrap();
+    assert_eq!(
+        sender.calls(),
+        0,
+        "nothing that may have run elsewhere runs again"
+    );
+    let events = events(&storage).await;
+    assert!(events.iter().any(|e| e.body
+        == EventBody::WriteUncertain {
+            command: id.clone()
+        }));
+}

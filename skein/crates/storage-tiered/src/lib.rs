@@ -216,6 +216,25 @@ impl Log for TieredLog {
         self.local.head(tenant, account).await
     }
 
+    async fn stage(
+        &self,
+        tenant: &TenantId,
+        account: &AccountId,
+        segment: &SegmentRef,
+        bytes: Bytes,
+    ) -> Result<(), StorageError> {
+        self.local.stage(tenant, account, segment, bytes).await
+    }
+
+    async fn install(
+        &self,
+        tenant: &TenantId,
+        account: &AccountId,
+        signed: &SignedHead,
+    ) -> Result<(), StorageError> {
+        self.local.install(tenant, account, signed).await
+    }
+
     async fn signed_head(
         &self,
         tenant: &TenantId,
@@ -266,6 +285,14 @@ impl Log for TieredLog {
 
     async fn purge(&self, tenant: &TenantId) -> Result<u64, StorageError> {
         self.local.purge(tenant).await
+    }
+
+    async fn purge_account(
+        &self,
+        tenant: &TenantId,
+        account: &skein_core::AccountId,
+    ) -> Result<u64, StorageError> {
+        self.local.purge_account(tenant, account).await
     }
 }
 

@@ -399,7 +399,9 @@ async fn lifecycle(server: Server) {
     let stored = |objects: &std::path::Path| {
         files(objects)
             .into_iter()
-            .filter(|f| !f.contains("/.lock") && !f.contains("/_nodes/"))
+            .filter(|f| {
+                !f.contains("/.lock") && !f.contains("/_nodes/") && !f.contains("/baton/nodes-/")
+            })
             .collect::<Vec<_>>()
     };
     let before = stored(&objects);
